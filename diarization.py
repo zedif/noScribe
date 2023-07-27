@@ -49,7 +49,6 @@ def identify_speakers(wav_audio_file):
     is a pyannote.core.Annotation object.
 
     :param str wav_audio_file: Path spoken audio input file in .wav format
-    :param str diarization_file: Path to the diarization output file or None
     :return diariztion as pyannote.core.Annotation obectj
     """
 
