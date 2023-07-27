@@ -23,6 +23,13 @@ As a result, researchers will be able to transcribe audio conversations more
 quickly than would be possible on personal hardware, or process multiple audio
 files in batches on a cluster.
 
+## Acknowledgment
+
+The base for this project is Kai Dröge’s original
+[noScribe](https://github.com/kaixxx/noScribe) for Windows and
+[gernophil](https://github.com/gernophil)’s
+[modification for macOS](https://github.com/gernophil/noScribe/tree/macOS).
+
 
 # noScribe for macOS
 noScribe for macOS can be used, but it's still under development. To use it you currently need conda and/or mamba. And you need to clone the macOS branch of the repository (not the main branch, since this is unchanged to kaixx's). The `whisper.cpp` was compiled using an Apple Silicon Mac so I am not sure, if it will run on an Intel Mac. noScribe for macOS is using `ffmpeg 6.0` from [ffmpeg.org](https://ffmpeg.org/). You might need to allow the program to run first. To do so follow [this instruction](https://support.apple.com/de-de/HT202491).
