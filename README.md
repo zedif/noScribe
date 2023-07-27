@@ -1,4 +1,30 @@
-﻿# noScribe for macOS
+﻿# noScribe for Linux clusters
+
+The goal of this project is to accelerate noScribe‘s transcription workflow by
+bringing its functionality from laptops and desktop computers onto more
+powerfull hardware. For researchers at universities, this often means
+workstations, servers, or cluster nodes running Linux.
+
+NoScribe provides a graphical user interface (GUI) to configure and run three
+conceptual steps:
+
+1. speaker diarization, i.e. attribution of spoken audio to individual speakers,
+   using [pyannote.audio](https://github.com/pyannote/pyannote-audio),
+2. audio transcription using
+   [whisper.cpp](https://github.com/ggerganov/whisper.cpp), and
+3. conversion of the transcript to a macro-enabled Word document for review and
+   correction in Microsoft Word.
+
+To port this functionality to linux clusters, we transfer the non-GUI
+functionality into individual Python scripts that can be run manually from the
+command line or as batch jobs on cluster job schedulers.
+
+As a result, researchers will be able to transcribe audio conversations more
+quickly than would be possible on personal hardware, or process multiple audio
+files in batches on a cluster.
+
+
+# noScribe for macOS
 noScribe for macOS can be used, but it's still under development. To use it you currently need conda and/or mamba. And you need to clone the macOS branch of the repository (not the main branch, since this is unchanged to kaixx's). The `whisper.cpp` was compiled using an Apple Silicon Mac so I am not sure, if it will run on an Intel Mac. noScribe for macOS is using `ffmpeg 6.0` from [ffmpeg.org](https://ffmpeg.org/). You might need to allow the program to run first. To do so follow [this instruction](https://support.apple.com/de-de/HT202491).
 
 ## Installation and execution of noScribe on macOS
