@@ -31,21 +31,6 @@ if platform.system() == "Darwin": # = MAC
 
 app_version = '0.3'
 
-# config
-config_dir = appdirs.user_config_dir('noScribe')
-print(config_dir)
-if not os.path.exists(config_dir):
-    os.makedirs(config_dir)
-try:
-    with open(f'{config_dir}/config.yml', 'r') as file:
-        config = yaml.safe_load(file)
-except: # seems we run it for the first time and there is no config file
-    config = {}
-
-def save_config():
-    with open(f'{config_dir}\\config.yml', 'w') as file:
-        yaml.safe_dump(config, file)
-
 import i18n
 from i18n import t
 i18n.set('filename_format', '{locale}.{format}')
@@ -116,16 +101,17 @@ def docx_add_bookmark(first_run, last_run, bookmark_name, bookmark_id):
 def cli():
 
     parser = argparse.ArgumentParser(description=t('app_header'))
-    parser.add_argument("-w", "--wav-input", help="Input wave file", required=True)
-    parser.add_argument("-d", "--diarization-input", help="Input diarization file (pickle file)", required=True)
-    parser.add_argument("-o", "--output", help="Output transcript file (.docm)", required=True)
-    parser.add_argument("-m", "--model", metavar="whisper_model", default="./models/ggml-base.en.bin",
+    parser.add_argument("-w", "--wav-input", metavar="file_name", help="Input wave file", required=True)
+    parser.add_argument("-d", "--diarization-input", metavar="file_name", help="Input diarization file (pickle file)", required=True)
+    parser.add_argument("-o", "--output", metavar="file_name", help="Output transcript file (.docm)", required=True)
+    parser.add_argument("-m", "--model", metavar="file_name", default="./models/ggml-base.en.bin",
         help="path to whisper model, e.g. ./models/ggml-base.en.bin")
     parser.add_argument(
         "--auto-save",
         action="store_true",
         help="Enable auto-save",
     )
+    parser.add_argument("--max-len", default="30", metavar='N', help="whisper.cpp flag: maximum segment length in characters")
     args = parser.parse_args()
 
     transcribe(
@@ -134,6 +120,7 @@ def cli():
         transcript_file=args.output,
         whisper_model=os.path.abspath(args.model),
         auto_save=args.auto_save,
+        whisper_options="--max-len " + args.max_len
     )
 
 
@@ -162,7 +149,7 @@ def reader_thread(process, q):
 
 
 def transcribe(wav_audio_file, diarization_file, transcript_file, whisper_model=DEFAULT_WHISPER_MODEL,
-               auto_save=True):
+               whisper_options="--max-len 30", whisper_extra_commands='', auto_save=True):
 
     print(t('welcome_message'))
     print(t('welcome_credits', v=app_version))
@@ -194,11 +181,6 @@ def transcribe(wav_audio_file, diarization_file, transcript_file, whisper_model=
                 prompt = prompts[language]
             except:
                 prompt = ''
-
-        # create log file
-        if not os.path.exists(f'{config_dir}/log'):
-            os.makedirs(f'{config_dir}/log')
-        log_file = open(f'{config_dir}/log/{Path(wav_audio_file).stem}.log', 'w', encoding="utf-8")
 
         # log CPU capabilities
         if platform.system() == 'Windows':
@@ -244,7 +226,7 @@ def transcribe(wav_audio_file, diarization_file, transcript_file, whisper_model=
             #-------------------------------------------------------
             # 2) Load in corresponding diarization
             diarization = __load_pickle(diarization_file)
-            print('diarization file loaded')
+            print(f'Loaded diarization file: {diarization_file}')
 
             #-------------------------------------------------------
             # 3) Transcribe with whisper.cpp
@@ -260,29 +242,6 @@ def transcribe(wav_audio_file, diarization_file, transcript_file, whisper_model=
                 prompt_cmd = ''#f'--prompt "{self.prompt}"'
             else:
                 prompt_cmd = ''
-
-            # whisper options:
-            # TODO: function paramter: whisper_options
-            try:
-                # max segement length. Shorter segments can improve speaker identification.
-                whisper_options = f"--max-len {config['whisper_options_max-len']}"
-            except:
-                config['whisper_options_max-len'] = '30'
-                whisper_options = "--max-len 30"
-
-            # "whisper_extra_commands" can be defined in config.yml and will be attached to the end of the command line.
-            # Use this to experiment with advanced options.
-            # see https://github.com/ggerganov/whisper.cpp/tree/master/examples/main for a list of options
-            # Be careful: If your options change the output of main.exe in the terminal, noScribe might not be able to interpret this and fail badly...
-
-            # TODO: function parameter
-            try:
-                whisper_extra_commands = config['whisper_extra_commands']
-                if whisper_extra_commands == None:
-                    whisper_extra_commands = ''
-            except:
-                config['whisper_extra_commands'] = ''
-                whisper_extra_commands = ''
 
             command = f'{whisper_path}/main --model {whisper_model} --language {language} {prompt_cmd} {whisper_options} --print-colors --print-progress --file "{wav_audio_file}" {whisper_extra_commands}'
             if platform.system() == "Darwin":  # = MAC
@@ -450,9 +409,10 @@ def transcribe(wav_audio_file, diarization_file, transcript_file, whisper_model=
 
             finally:
                 process.kill() # exit subprocess (zombie!)
-        finally:
-            log_file.close()
-            log_file = None
+
+        except Exception as e:
+            print(f"An unexpected error occurred: {e}")
+
 
     except Exception as e:
         print(t('err_options'), 'error')
