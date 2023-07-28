@@ -106,6 +106,7 @@ def cli():
     parser.add_argument("-o", "--output", metavar="file_name", help="Output transcript file (.docm)", required=True)
     parser.add_argument("-m", "--model", metavar="file_name", default="./models/ggml-base.en.bin",
         help="path to whisper model, e.g. ./models/ggml-base.en.bin")
+    parser.add_argument("-l", "--language", default='auto', help="spoken language ('en' for English, 'de' for German, 'auto' for auto-detect)")
     parser.add_argument(
         "--auto-save",
         action="store_true",
@@ -118,6 +119,7 @@ def cli():
         wav_audio_file=args.wav_input,
         diarization_file=args.diarization_input,
         transcript_file=args.output,
+        language=args.language,
         whisper_model=os.path.abspath(args.model),
         auto_save=args.auto_save,
         whisper_options="--max-len " + args.max_len
@@ -148,7 +150,7 @@ def reader_thread(process, q):
         q.put(None)
 
 
-def transcribe(wav_audio_file, diarization_file, transcript_file, whisper_model=DEFAULT_WHISPER_MODEL,
+def transcribe(wav_audio_file, diarization_file, transcript_file, language='auto', whisper_model=DEFAULT_WHISPER_MODEL,
                whisper_options="--max-len 30", whisper_extra_commands='', auto_save=True):
 
     print(t('welcome_message'))
@@ -165,23 +167,6 @@ def transcribe(wav_audio_file, diarization_file, transcript_file, whisper_model=
     print(f'Saving transcript to: {transcript_file}')
 
     try:
-        # function parameter
-        prompt = ''
-        try:
-            with open('prompt.yml', 'r') as file:
-                prompts = yaml.safe_load(file)
-        except:
-            prompts = {}
-
-        # function parameter
-        language = 'auto'
-        if language != 'auto':
-            language = language[0:3].strip()
-            try:
-                prompt = prompts[language]
-            except:
-                prompt = ''
-
         # log CPU capabilities
         if platform.system() == 'Windows':
             print("=== CPU FEATURES ===")
@@ -231,19 +216,10 @@ def transcribe(wav_audio_file, diarization_file, transcript_file, whisper_model=
             #-------------------------------------------------------
             # 3) Transcribe with whisper.cpp
 
-            print()
             print(t('start_transcription'))
             print(t('loading_whisper'))
-            print()
 
-            # prompt?
-            # TODO: function parameter
-            if prompt != '':
-                prompt_cmd = ''#f'--prompt "{self.prompt}"'
-            else:
-                prompt_cmd = ''
-
-            command = f'{whisper_path}/main --model {whisper_model} --language {language} {prompt_cmd} {whisper_options} --print-colors --print-progress --file "{wav_audio_file}" {whisper_extra_commands}'
+            command = f'{whisper_path}/main --model {whisper_model} --language {language} {whisper_options} --print-colors --print-progress --file "{wav_audio_file}" {whisper_extra_commands}'
             if platform.system() == "Darwin":  # = MAC
                 command = shlex.split(command)
             print(f'Whisper command: {command}')
