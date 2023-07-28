@@ -329,6 +329,9 @@ def transcribe(wav_audio_file, diarization_file, transcript_file, whisper_model=
                 cancel = False
                 while process.poll() == None: # process is running
 
+                    # poll only every 1/10th of a second for the while loop not to max out one core.
+                    sleep(0.1)
+
                     # check for user cancelation
                     if cancel == True:
                         if auto_save == True:
