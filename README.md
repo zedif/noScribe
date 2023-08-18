@@ -1,4 +1,4 @@
-﻿# noScribe for Linux clusters
+# noScribe for Linux clusters
 
 The goal of this project is to accelerate noScribe‘s transcription workflow by
 bringing its functionality from laptops and desktop computers onto more
@@ -22,6 +22,64 @@ command line or as batch jobs on cluster job schedulers.
 As a result, researchers will be able to transcribe audio conversations more
 quickly than would be possible on personal hardware, or process multiple audio
 files in batches on a cluster.
+
+In addition to the original code base, this repository contains the following
+files:
+
+- `diarization.py` – identify speakers in a wave file and save as Python pickle
+  file
+- `transcribe.py` - transcribe and integrate pickled diarization of a wave file
+  into a Word transcript
+- `cuda-environment.yaml` — defines a Python Conda environment that contains
+  CUDA and CUDA-enabled pyannote and pytorch libgraries
+
+
+## Installation
+
+...
+
+
+## Workflow
+
+Let us assume, we want to transcribe an interview recording stored in
+`~/audio/interview.m4a`. On a x86_64 Linux system, we can create a noScribe 
+transcript of it using the following workflow:
+
+1. Setup environment variables for convenience
+
+   ```
+   export AUDIO_PATH=~/audio
+   export WHISPER_MODEL=~/models/ggml-medium.bin
+   ```
+
+2. Convert audio to .wav format
+
+   ```
+   ./ffmpeg-linux-x86_64 \
+   -nostdin -loglevel warning -y \
+   -ar 16000 -ac 1 -c:a pcm_s16le \
+   -i ${AUDIO_PATH}/interview.m4a \
+   ${AUDIO_PATH}/interview.wav
+   ```
+
+2. Create the diarization file
+
+   ```
+   ./diarization.py \
+   -i ${AUDIO_PATH}/interview.wav \
+   -o ${AUDIO_PATH}/interview.speaker
+   ```
+
+3. Create the transcript
+
+   ```
+   ./transcribe.py \
+   -w ${AUDIO_PATH}/interview.wav \
+   -d ${AUDIO_PATH}/interview.speaker \
+   -o ${AUDIO_PATH}/interview.docx \
+   --model ${WHISPER_MODEL}
+   ```
+
 
 ## Acknowledgment
 
