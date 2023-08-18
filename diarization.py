@@ -7,6 +7,7 @@ import locale
 import os
 import pickle
 import platform
+import torch
 
 import i18n
 from i18n import t
@@ -19,7 +20,14 @@ except:
 i18n.set('fallback', 'en')
 i18n.set('locale', app_locale)
 
-HAS_MPS_SUPPORT = platform.mac_ver()[0] >= '12.3'  # MPS needs macOS 12.3+
+if torch.cuda.is_available():
+    DEVICE = ("cuda", "Nvidia GPU (CUDA)")
+elif platform.mac_ver()[0] >= '12.3':  # MPS needs macOS 12.3+
+    DEVICE = ("mps", "Apple Silicon GPU")
+else:
+    DEVICE = ("cpu", "CPU")
+print(f'Running diarization on {DEVICE[1]}.')
+
 
 if platform.system() == 'Darwin':
     os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = str(1)
@@ -57,11 +65,11 @@ def identify_speakers(wav_audio_file):
         from pyannote.audio import Pipeline
 
         pipeline = Pipeline.from_pretrained('./models/pyannote_config.yaml')
-        if HAS_MPS_SUPPORT:
-            pipeline.to("mps")
-            print('Using Apple Silicon GPU.')
+        pipeline.to(DEVICE[0])
 
+        print('Starting diarization...')
         diarization = pipeline(wav_audio_file)  # apply the pipeline to the audio file
+        print('...finished')
 
         # read stderr and log it:
         err = f.readline()
