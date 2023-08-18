@@ -23,10 +23,11 @@ from time import sleep
 
 if platform.system() == 'Windows':
     import cpufeature
-if platform.system() == "Darwin": # = MAC
+if platform.system() in ["Darwin", "Linux"]: # = macOS or Linux
     import shlex
 
-if platform.system() == "Darwin": # = MAC
+
+if platform.system() in ["Darwin", "Linux"]: # = macOS or Linux
     bundle_dir = os.path.abspath(os.path.dirname(__file__))
 
 app_version = '0.3'
@@ -48,13 +49,18 @@ if platform.system() == 'Windows':
         whisper_path = "./whisper_avx2"
     else:
         whisper_path = "./whisper_sse2"
-elif platform.system() == "Darwin": # = MAC
+elif platform.system() == "Darwin": # = macOS
     if platform.machine() == "arm64":
         whisper_path = "./whisper_mac"
     elif platform.machine() == "x86_64":
         raise Exception('Platform not supported yet.')
     else:
         raise Exception('Could not detect Apple architecture.')
+elif platform.system() == "Linux":
+    if platform.machine() == "x86_64":
+        whisper_path = "./whisper_linux"
+    else:
+        raise Exception('Platform not supported yet.')
 else:
     raise Exception('Platform not supported yet.')
 
@@ -104,8 +110,8 @@ def cli():
     parser.add_argument("-w", "--wav-input", metavar="file_name", help="Input wave file", required=True)
     parser.add_argument("-d", "--diarization-input", metavar="file_name", help="Input diarization file (pickle file)", required=True)
     parser.add_argument("-o", "--output", metavar="file_name", help="Output transcript file (.docm)", required=True)
-    parser.add_argument("-m", "--model", metavar="file_name", default="./models/ggml-base.en.bin",
-        help="path to whisper model, e.g. ./models/ggml-base.en.bin")
+    parser.add_argument("-m", "--model", metavar="file_name", default="./models/ggml-base.bin",
+        help="path to whisper model, e.g. ./models/ggml-base.bin")
     parser.add_argument("-l", "--language", default='auto', help="spoken language ('en' for English, 'de' for German, 'auto' for auto-detect)")
     parser.add_argument(
         "--auto-save",
@@ -220,7 +226,7 @@ def transcribe(wav_audio_file, diarization_file, transcript_file, language='auto
             print(t('loading_whisper'))
 
             command = f'{whisper_path}/main --model {whisper_model} --language {language} {whisper_options} --print-colors --print-progress --file "{wav_audio_file}" {whisper_extra_commands}'
-            if platform.system() == "Darwin":  # = MAC
+            if platform.system() in ["Darwin", "Linux"]: # = macOS or Linux
                 command = shlex.split(command)
             print(f'Whisper command: {command}')
 
@@ -247,7 +253,7 @@ def transcribe(wav_audio_file, diarization_file, transcript_file, language='auto
                     startupinfo = STARTUPINFO()
                     startupinfo.dwFlags |= STARTF_USESHOWWINDOW
                     process = Popen(command, stdout=PIPE, stderr=STDOUT, startupinfo=startupinfo)
-                elif platform.system() == "Darwin":  # = MAC
+                elif platform.system() in ["Darwin", "Linux"]:
                     process = Popen(command, stdout=PIPE, stderr=STDOUT)
                 # Run whisper.cpp main.exe without blocking the GUI:
                 # Source: https://stackoverflow.com/questions/12057794/python-using-popen-poll-on-background-process
