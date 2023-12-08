@@ -113,6 +113,7 @@ def cli():
     parser.add_argument("-m", "--model", metavar="file_name", default="./models/ggml-base.bin",
         help="path to whisper model, e.g. ./models/ggml-base.bin")
     parser.add_argument("-l", "--language", default='auto', help="spoken language ('en' for English, 'de' for German, 'auto' for auto-detect)")
+    parser.add_argument("-t", "--threads", default="4", help="Number of parallel threads to use (default: 4)")
     parser.add_argument(
         "--auto-save",
         action="store_true",
@@ -128,7 +129,8 @@ def cli():
         language=args.language,
         whisper_model=os.path.abspath(args.model),
         auto_save=args.auto_save,
-        whisper_options="--max-len " + args.max_len
+        whisper_options="--max-len " + args.max_len,
+        number_of_threads=args.threads
     )
 
 
@@ -157,7 +159,7 @@ def reader_thread(process, q):
 
 
 def transcribe(wav_audio_file, diarization_file, transcript_file, language='auto', whisper_model=DEFAULT_WHISPER_MODEL,
-               whisper_options="--max-len 30", whisper_extra_commands='', auto_save=True):
+               whisper_options="--max-len 30", number_of_threads="4", whisper_extra_commands='', auto_save=True):
 
     print(t('welcome_message'))
     print(t('welcome_credits', v=app_version))
@@ -225,7 +227,7 @@ def transcribe(wav_audio_file, diarization_file, transcript_file, language='auto
             print(t('start_transcription'))
             print(t('loading_whisper'))
 
-            command = f'{whisper_path}/main --model {whisper_model} --language {language} {whisper_options} --print-colors --print-progress --file "{wav_audio_file}" {whisper_extra_commands}'
+            command = f'{whisper_path}/main --model {whisper_model} --language {language} {whisper_options} --threads {number_of_threads} --print-colors --print-progress --file "{wav_audio_file}" {whisper_extra_commands}'
             if platform.system() in ["Darwin", "Linux"]: # = macOS or Linux
                 command = shlex.split(command)
             print(f'Whisper command: {command}')
