@@ -194,7 +194,63 @@ else:
 # timestamp regex
 timestamp_re = re.compile('\[\d\d:\d\d:\d\d.\d\d\d --> \d\d:\d\d:\d\d.\d\d\d\]')
 
+
 # Helper functions
+def find_speaker(diarization, transcript_start, transcript_end, overlapping_speech_selected) -> str:
+    # Looks for the shortest segment in diarization that has at least 80% overlap
+    # with transcript_start - trancript_end.
+    # Returns the speaker name if found.
+    # If only an overlap < 80% is found, this speaker name ist returned.
+    # If no overlap is found, an empty string is returned.
+    spkr = ''
+    overlap_found = 0
+    overlap_threshold = 0.8
+    segment_len = 0
+    is_overlapping = False
+
+    for segment in diarization:
+        t = overlap_len(segment["start"], segment["end"], transcript_start, transcript_end)
+        if t is None: # we are already after transcript_end
+            break
+
+        current_segment_len = segment["end"] - segment["start"] # Length of the current segment
+        current_segment_spkr = f'S{segment["label"][8:]}' # shorten the label: "SPEAKER_01" > "S01"
+
+        if overlap_found >= overlap_threshold: # we already found a fitting segment, compare length now
+            if (t >= overlap_threshold) and (current_segment_len < segment_len): # found a shorter (= better fitting) segment that also overlaps well
+                is_overlapping = True
+                overlap_found = t
+                segment_len = current_segment_len
+                spkr = current_segment_spkr
+        elif t > overlap_found: # no segment with good overlap yet, take this if the overlap is better then previously found
+            overlap_found = t
+            segment_len = current_segment_len
+            spkr = current_segment_spkr
+
+    if overlapping_speech_selected and is_overlapping:
+        return f"//{spkr}"
+    else:
+        return spkr
+
+def overlap_len(ss_start, ss_end, ts_start, ts_end):
+    # ss...: speaker segment start and end in milliseconds (from pyannote)
+    # ts...: transcript segment start and end (from whisper.cpp)
+    # returns overlap percentage, i.e., "0.8" = 80% of the transcript segment overlaps with the speaker segment from pyannote
+    if ts_end < ss_start: # no overlap, ts is before ss
+        return None
+
+    if ts_start > ss_end: # no overlap, ts is after ss
+        return 0.0
+
+    ts_len = ts_end - ts_start
+    if ts_len <= 0:
+        return None
+
+    # ss & ts have overlap
+    overlap_start = max(ss_start, ts_start) # Whichever starts later
+    overlap_end = min(ss_end, ts_end) # Whichever ends sooner
+    ol_len = overlap_end - overlap_start + 1
+    return ol_len / ts_len
 
 def millisec(timeStr: str) -> int:
     """ Convert 'hh:mm:ss' string into milliseconds """
@@ -883,66 +939,6 @@ class App(ctk.CTk):
 
                 #-------------------------------------------------------
                 # 2) Speaker identification (diarization) with pyannote
-
-                def find_speaker(diarization, transcript_start, transcript_end, overlapping_speech_selected) -> str:
-                # Helper Functions:
-
-                def overlap_len(ss_start, ss_end, ts_start, ts_end):
-                    # ss...: speaker segment start and end in milliseconds (from pyannote)
-                    # ts...: transcript segment start and end (from whisper.cpp)
-                    # returns overlap percentage, i.e., "0.8" = 80% of the transcript segment overlaps with the speaker segment from pyannote  
-                    if ts_end < ss_start: # no overlap, ts is before ss
-                        return None
-
-                    if ts_start > ss_end: # no overlap, ts is after ss
-                        return 0.0
-
-                    ts_len = ts_end - ts_start
-                    if ts_len <= 0:
-                        return None
-
-                    # ss & ts have overlap
-                    overlap_start = max(ss_start, ts_start) # Whichever starts later
-                    overlap_end = min(ss_end, ts_end) # Whichever ends sooner
-
-                    ol_len = overlap_end - overlap_start + 1
-                    return ol_len / ts_len
-
-                def find_speaker(diarization, transcript_start, transcript_end) -> str:
-                    # Looks for the shortest segment in diarization that has at least 80% overlap 
-                    # with transcript_start - trancript_end.  
-                    # Returns the speaker name if found.
-                    # If only an overlap < 80% is found, this speaker name ist returned.
-                    # If no overlap is found, an empty string is returned.
-                    spkr = ''
-                    overlap_found = 0
-                    overlap_threshold = 0.8
-                    segment_len = 0
-                    is_overlapping = False
-
-                    for segment in diarization:
-                        t = overlap_len(segment["start"], segment["end"], transcript_start, transcript_end)
-                        if t is None: # we are already after transcript_end
-                            break
-
-                        current_segment_len = segment["end"] - segment["start"] # Length of the current segment
-                        current_segment_spkr = f'S{segment["label"][8:]}' # shorten the label: "SPEAKER_01" > "S01"
-
-                        if overlap_found >= overlap_threshold: # we already found a fitting segment, compare length now
-                            if (t >= overlap_threshold) and (current_segment_len < segment_len): # found a shorter (= better fitting) segment that also overlaps well
-                                is_overlapping = True
-                                overlap_found = t
-                                segment_len = current_segment_len
-                                spkr = current_segment_spkr
-                        elif t > overlap_found: # no segment with good overlap yet, take this if the overlap is better then previously found 
-                            overlap_found = t
-                            segment_len = current_segment_len
-                            spkr = current_segment_spkr
-                        
-                    if overlapping_speech_selected and is_overlapping:
-                        return f"//{spkr}"
-                    else:
-                        return spkr
 
                 # Start Diarization:
 
