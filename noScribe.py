@@ -772,8 +772,8 @@ class App(ctk.CTk):
             self.speaker_detection = self.option_menu_speaker.get()
             option_info += f'{t("label_speaker")} {self.speaker_detection} | '
 
-            self.overlapping = self.check_box_overlapping.get()
-            option_info += f'{t("label_overlapping")} {self.overlapping} | '
+            self.overlapping_speech_selected = self.check_box_overlapping.get()
+            option_info += f'{t("label_overlapping")} {self.overlapping_speech_selected} | '
 
             self.timestamps = self.check_box_timestamps.get()
             option_info += f'{t("label_timestamps")} {self.timestamps} | '
@@ -790,11 +790,11 @@ class App(ctk.CTk):
             self.auto_edit_transcript = get_config('auto_edit_transcript', 'True')
             
             # Check for invalid vtt options
-            if self.cfg.transcript.file_ext == 'vtt' and (self.pause > 0 or self.overlapping or self.timestamps):
+            if self.cfg.transcript.file_ext == 'vtt' and (self.pause > 0 or self.overlapping_speech_selected or self.timestamps):
                 self.logn()
                 self.logn(t('err_vtt_invalid_options'), 'error')
                 self.pause = 0
-                self.overlapping = False
+                self.overlapping_speech_selected = False
                 self.timestamps = False           
 
             if platform.system() == "Darwin": # = MAC
@@ -884,6 +884,7 @@ class App(ctk.CTk):
                 #-------------------------------------------------------
                 # 2) Speaker identification (diarization) with pyannote
 
+                def find_speaker(diarization, transcript_start, transcript_end, overlapping_speech_selected) -> str:
                 # Helper Functions:
 
                 def overlap_len(ss_start, ss_end, ts_start, ts_end):
@@ -938,7 +939,7 @@ class App(ctk.CTk):
                             segment_len = current_segment_len
                             spkr = current_segment_spkr
                         
-                    if self.overlapping and is_overlapping:
+                    if overlapping_speech_selected and is_overlapping:
                         return f"//{spkr}"
                     else:
                         return spkr
@@ -1221,7 +1222,7 @@ class App(ctk.CTk):
                         seg_html = seg_text
 
                         if self.speaker_detection != 'none':
-                            new_speaker = find_speaker(diarization, start, end)
+                            new_speaker = find_speaker(diarization, start, end, self.overlapping_speech_selected)
                             if (speaker != new_speaker) and (new_speaker != ''): # speaker change
                                 if new_speaker[:2] == '//': # is overlapping speech, create no new paragraph
                                     prev_speaker = speaker
