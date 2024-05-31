@@ -58,7 +58,7 @@ if platform.system() == 'Darwin':
     import Foundation
 import logging
 import json
-from munch import DefaultMunch
+from munch import Munch, DefaultMunch
 import urllib
 
 logging.basicConfig()
@@ -95,21 +95,46 @@ if not os.path.exists(config_dir):
     os.makedirs(config_dir)
 
 config_file = os.path.join(config_dir, 'config.yml')
+
+platform_cfg = DefaultMunch(None)
+platform_cfg.system = platform.system()
+
 cfg = DefaultMunch(None)
+cfg.transcript = DefaultMunch(None)
+cfg.whisper = DefaultMunch(None)
+cfg.ffmpeg = DefaultMunch(None)
+cfg.diarize = DefaultMunch(None)
+cfg.transcript.file = ''
+cfg.audio_file= ''
+
+cfg.startupinfo = None
+if platform_cfg.system == 'Windows':
+    cfg.ffmpeg.path = 'ffmpeg.exe'
+    # (supresses the terminal, see: https://stackoverflow.com/questions/1813872/running-a-process-in-pythonw-with-popen-without-a-console)
+    cfg.startupinfo = STARTUPINFO()
+    cfg.startupinfo.dwFlags |= STARTF_USESHOWWINDOW
+elif platform_cfg.system == "Darwin":  # = MAC
+    cfg.ffmpeg.path = os.path.join(app_dir, 'ffmpeg')
+elif platform_cfg.system == "Linux":
+    # TODO: Use system ffmpeg if available
+    cfg.ffmpeg.path = os.path.join(app_dir, 'ffmpeg-linux-x86_64')
+else:
+    raise Exception('Platform not supported yet.')
+
 
 try:
     with open(config_file, 'r') as file:
-        config = yaml.safe_load(file)
-        if not config:
+        app_config = Munch(yaml.safe_load(file))
+        if not app_config:
             raise # config file is empty (None)        
 except: # seems we run it for the first time and there is no config file
-    config = {}
+    app_config = Munch()
     
 def get_config(key: str, default):
     """ Get a config value, set it if it doesn't exist """
-    if key not in config:
-        config[key] = default
-    return config[key]
+    if key not in app_config:
+        app_config[key] = default
+    return app_config[key]
 
     
 def version_higher(version1, version2) -> int:
@@ -137,16 +162,16 @@ def version_higher(version1, version2) -> int:
 # Delete this so we can determine the optimal value  
 if platform.system() in ('Windows', 'Linux'):
     try:
-        if version_higher('0.4.5', config['app_version']) == 1:
-            del config['pyannote_xpu'] 
+        if version_higher('0.4.5', app_config['app_version']) == 1:
+            del app_config['pyannote_xpu']
     except:
         pass
 
-config['app_version'] = app_version
+app_config['app_version'] = app_version
 
 def save_config():
     with open(config_file, 'w') as file:
-        yaml.safe_dump(config, file)
+        yaml.safe_dump(app_config, file)
 
 save_config()
 
@@ -158,7 +183,7 @@ i18n.set('filename_format', '{locale}.{format}')
 i18n.load_path.append(os.path.join(app_dir, 'trans'))
 
 try:
-    app_locale = config['locale']
+    app_locale = app_config['locale']
 except:
     app_locale = 'auto'
 
@@ -172,24 +197,26 @@ if app_locale == 'auto': # read system locale settings
         app_locale = 'en'
 i18n.set('fallback', 'en')
 i18n.set('locale', app_locale)
-config['locale'] = app_locale
+app_config['locale'] = app_locale
 
 # determine optimal number of threads for faster-whisper (depending on cpu cores) 
-if platform.system() == 'Windows':
-    number_threads = cpufeature.CPUFeature["num_physical_cores"]
-elif platform.system() == "Linux":
-    number_threads = os.cpu_count()
-    number_threads = 4 if number_threads is None else number_threads
-elif platform.system() == "Darwin": # = MAC
-    if platform.machine() == "arm64":
-        cpu_count = int(check_output(["sysctl", "-n", "hw.perflevel0.logicalcpu_max"]))
-    elif platform.machine() == "x86_64":
-        cpu_count = int(check_output(["sysctl", "-n", "hw.logicalcpu_max"]))
+def get_number_threads():
+    if platform.system() == 'Windows':
+        return cpufeature.CPUFeature["num_physical_cores"]
+    elif platform.system() == "Linux":
+        cpu_count = os.cpu_count()
+        return 4 if cpu_count is None else cpu_count
+    elif platform.system() == "Darwin": # = MAC
+        if platform.machine() == "arm64":
+            cpu_count = int(check_output(["sysctl", "-n", "hw.perflevel0.logicalcpu_max"]))
+        elif platform.machine() == "x86_64":
+            cpu_count = int(check_output(["sysctl", "-n", "hw.logicalcpu_max"]))
+        else:
+            raise Exception("Unsupported Mac")
+        return int(cpu_count * 0.75)
     else:
-        raise Exception("Unsupported mac")
-    number_threads = int(cpu_count * 0.75)
-else:
-    raise Exception('Platform not supported yet.')
+        raise Exception('Platform not supported yet.')
+platform_cfg.number_threads = get_number_threads()
 
 # timestamp regex
 timestamp_re = re.compile('\[\d\d:\d\d:\d\d.\d\d\d --> \d\d:\d\d:\d\d.\d\d\d\]')
@@ -389,20 +416,18 @@ class App(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
         self.cfg = cfg
-        self.audio_file = ''
-        self.transcript_file = ''
         self.log_file = None
         self.cancel = False # if set to True, transcription will be canceled
 
         # configure window
         self.title('noScribe - ' + t('app_header'))
-        if platform.system() in ("Darwin", "Linux"):
+        if platform_cfg.system in ("Darwin", "Linux"):
             self.geometry(f"{1100}x{725}")
         else:
             self.geometry(f"{1100}x{650}")
-        if platform.system() in ("Darwin", "Windows"):
+        if platform_cfg.system in ("Darwin", "Windows"):
             self.iconbitmap('noScribeLogo.ico')
-        if platform.system() == "Linux":
+        if platform_cfg.system == "Linux":
             self.iconphoto(True, tk.PhotoImage(file='noScribeLogo.png'))
 
         # header
@@ -526,7 +551,7 @@ class App(ctk.CTk):
 
         self.check_box_overlapping = ctk.CTkCheckBox(self.frame_options, text = '')
         self.check_box_overlapping.grid(column=1, row=6, sticky='e', pady=5)
-        overlapping = config.get('last_overlapping', True)
+        overlapping = app_config.get('last_overlapping', True)
         if overlapping:
             self.check_box_overlapping.select()
         else:
@@ -538,7 +563,7 @@ class App(ctk.CTk):
 
         self.check_box_timestamps = ctk.CTkCheckBox(self.frame_options, text = '')
         self.check_box_timestamps.grid(column=1, row=7, sticky='e', pady=5)
-        check_box_timestamps = config.get('last_timestamps', False)
+        check_box_timestamps = app_config.get('last_timestamps', False)
         if check_box_timestamps:
             self.check_box_timestamps.select()
         else:
@@ -609,8 +634,8 @@ class App(ctk.CTk):
         # Source: https://stackoverflow.com/questions/13243807/popen-waiting-for-child-process-even-when-the-immediate-child-has-terminated/13256908#13256908 
         # set system/version dependent "start_new_session" analogs
         if file == '':
-            file = self.transcript_file
-        ext = os.path.splitext(self.transcript_file)[1][1:]
+            file = self.cfg.transcript.file
+        ext = os.path.splitext(self.cfg.transcript.file)[1][1:]
         if file != '' and ext != 'html':
             file = ''
             if not tk.messagebox.askyesno(title='noScribe', message=t('err_editor_invalid_format')):
@@ -672,38 +697,38 @@ class App(ctk.CTk):
         self.log(txt, tags, where, link)
 
     def button_audio_file_event(self):
-        fn = tk.filedialog.askopenfilename(initialdir=os.path.dirname(self.audio_file), initialfile=os.path.basename(self.audio_file))
+        fn = tk.filedialog.askopenfilename(initialdir=os.path.dirname(self.cfg.audio_file), initialfile=os.path.basename(self.cfg.audio_file))
         if fn:
-            self.audio_file = fn
-            self.logn(t('log_audio_file_selected') + self.audio_file)
-            self.button_audio_file_name.configure(text=os.path.basename(self.audio_file))
+            self.cfg.audio_file = fn
+            self.logn(t('log_audio_file_selected') + self.cfg.audio_file)
+            self.button_audio_file_name.configure(text=os.path.basename(self.cfg.audio_file))
 
     def button_transcript_file_event(self):
-        if self.transcript_file != '':
-            _initialdir = os.path.dirname(self.transcript_file)
-            _initialfile = os.path.basename(self.transcript_file)
+        if self.cfg.transcript.file != '':
+            _initialdir = os.path.dirname(self.cfg.transcript.file)
+            _initialfile = os.path.basename(self.cfg.transcript.file)
         else:
-            _initialdir = os.path.dirname(self.audio_file)
-            _initialfile = Path(os.path.basename(self.audio_file)).stem
-        if not ('last_filetype' in config):
-            config['last_filetype'] = 'html'
+            _initialdir = os.path.dirname(self.cfg.audio_file)
+            _initialfile = Path(os.path.basename(self.cfg.audio_file)).stem
+        if not ('last_filetype' in app_config):
+            app_config['last_filetype'] = 'html'
         filetypes = [
             ('noScribe Transcript','*.html'), 
             ('Text only','*.txt'),
             ('WebVTT Subtitles (also for EXMARaLDA)', '*.vtt')
         ]
         for i, ft in enumerate(filetypes):
-            if ft[1] == f'*.{config["last_filetype"]}':
+            if ft[1] == f'*.{app_config["last_filetype"]}':
                 filetypes.insert(0, filetypes.pop(i))
                 break
         fn = tk.filedialog.asksaveasfilename(initialdir=_initialdir, initialfile=_initialfile, 
                                              filetypes=filetypes, 
-                                             defaultextension=config['last_filetype'])
+                                             defaultextension=app_config['last_filetype'])
         if fn:
-            self.transcript_file = fn
-            self.logn(t('log_transcript_filename') + self.transcript_file)
-            self.button_transcript_file_name.configure(text=os.path.basename(self.transcript_file))
-            config['last_filetype'] = os.path.splitext(self.transcript_file)[1][1:]
+            self.cfg.transcript.file = fn
+            self.logn(t('log_transcript_filename') + self.cfg.transcript.file)
+            self.button_transcript_file_name.configure(text=os.path.basename(self.cfg.transcript.file))
+            app_config['last_filetype'] = os.path.splitext(self.cfg.transcript.file)[1][1:]
             
     def set_progress(self, step, value):
         """ Update state of the progress bar """
@@ -737,27 +762,23 @@ class App(ctk.CTk):
             # collect all the options
             option_info = ''
 
-            if self.audio_file == '':
+            if self.cfg.audio_file == '':
                 self.logn(t('err_no_audio_file'), 'error')
                 tk.messagebox.showerror(title='noScribe', message=t('err_no_audio_file'))
                 return
 
-            if self.transcript_file == '':
+            if self.cfg.transcript.file == '':
                 self.logn(t('err_no_transcript_file'), 'error')
                 tk.messagebox.showerror(title='noScribe', message=t('err_no_transcript_file'))
                 return
 
-            self.cfg.transcript = DefaultMunch(None)
-            self.cfg.whisper = DefaultMunch(None)
-            self.cfg.ffmpeg = DefaultMunch(None)
-            self.cfg.diarize = DefaultMunch(None)
-            self.cfg.transcript.file = self.transcript_file
+            self.cfg.my_transcript_file = self.cfg.transcript.file
             self.cfg.transcript.file_ext = os.path.splitext(self.cfg.transcript.file)[1][1:]
 
             # create log file
             if not os.path.exists(f'{config_dir}/log'):
                 os.makedirs(f'{config_dir}/log')
-            self.log_file = open(f'{config_dir}/log/{Path(self.cfg.transcript.file).stem}.log', 'w', encoding="utf-8")
+            self.log_file = open(f'{config_dir}/log/{Path(self.cfg.my_transcript_file).stem}.log', 'w', encoding="utf-8")
 
             # options for faster-whisper
             self.cfg.whisper.precise_beam_size = get_config('whisper_precise_beam_size', 1)
@@ -787,16 +808,16 @@ class App(ctk.CTk):
             # get UI settings
             val = self.entry_start.get()
             if val == '':
-                self.start = 0
+                self.cfg.start = 0
             else:
-                self.start = millisec(val)
+                self.cfg.start = millisec(val)
                 option_info += f'{t("label_start")} {val} | ' 
 
             val = self.entry_stop.get()
             if val == '':
-                self.stop = '0'
+                self.cfg.stop = '0'
             else:
-                self.stop = millisec(val)
+                self.cfg.stop = millisec(val)
                 option_info += f'{t("label_stop")} {val} | '
 
             if self.option_menu_quality.get() == 'fast':
@@ -806,7 +827,7 @@ class App(ctk.CTk):
                 self.cfg.whisper.compute_type = self.cfg.whisper.fast_compute_type
             else:
                 self.cfg.whisper.model = os.path.join(app_dir, 'models', 'faster-whisper-large-v2')
-                self.cfg.whisper.beam_size = self.cfg.precise_beam_size
+                self.cfg.whisper.beam_size = self.cfg.whisper.precise_beam_size
                 self.cfg.whisper.temperature = self.cfg.whisper.precise_temperature
                 self.cfg.whisper.compute_type = self.cfg.whisper.precise_compute_type
             option_info += f'{t("label_quality")} {self.option_menu_quality.get()} | '
@@ -878,9 +899,9 @@ class App(ctk.CTk):
             elif platform.system() == "Darwin": # = MAC
                 self.logn(f"System: MAC {platform.machine()}", where="file")
                 if platform.mac_ver()[0] >= '12.3': # MPS needs macOS 12.3+
-                    if config['pyannote_xpu'] == 'mps':
+                    if app_config['pyannote_xpu'] == 'mps':
                         self.logn("macOS version >= 12.3:\nUsing MPS (with PYTORCH_ENABLE_MPS_FALLBACK enabled)", where="file")
-                    elif config['pyannote_xpu'] == 'cpu':
+                    elif app_config['pyannote_xpu'] == 'cpu':
                         self.logn("macOS version >= 12.3:\nUser selected to use CPU (results will be better, but you might wanna make yourself a coffee)", where="file")
                     else:
                         self.logn("macOS version >= 12.3:\nInvalid option for 'pyannote_xpu' in config.yml (should be 'mps' or 'cpu')\nYou might wanna change this\nUsing MPS anyway (with PYTORCH_ENABLE_MPS_FALLBACK enabled)", where="file")
@@ -896,40 +917,36 @@ class App(ctk.CTk):
                     self.logn()
                     self.logn(t('start_audio_conversion'), 'highlight')
                 
-                    if int(self.stop) > 0: # transcribe only part of the audio
-                        self.cfg.ffmpeg.end_pos_cmd = f'-to {self.stop}ms'
-                    else: # tranbscribe until the end
+                    if int(self.cfg.stop) > 0: # transcribe only part of the audio
+                        self.cfg.ffmpeg.end_pos_cmd = f'-to {self.cfg.stop}ms'
+                    else: # transcribe until the end
                         self.cfg.ffmpeg.end_pos_cmd = ''
 
-                    self.cfg.ffmpeg.arguments = f' -loglevel warning -y -ss {self.start}ms {self.cfg.ffmpeg.end_pos_cmd} -i \"{self.audio_file}\" -ar 16000 -ac 1 -c:a pcm_s16le {self.cfg.tmp_audio_file}'
+                    self.cfg.ffmpeg.arguments = f' -loglevel warning -y -ss {self.cfg.start}ms {self.cfg.ffmpeg.end_pos_cmd} -i \"{self.cfg.audio_file}\" -ar 16000 -ac 1 -c:a pcm_s16le {self.cfg.tmp_audio_file}'
                     if platform.system() == 'Windows':
-                        self.cfg.ffmpeg.path = 'ffmpeg.exe'
-                        self.cfg.ffmpeg.cmd = self.cfg.ffmpeg.path + self.cfg.arguments
-                    elif platform.system() == "Darwin":  # = MAC
-                        self.cfg.ffmpeg.path = os.path.join(app_dir, 'ffmpeg')
-                        self.cfg.ffmpeg.cmd = shlex.split(self.cfg.ffmpeg.path + self.cfg.ffmpeg.arguments)
-                    elif platform.system() == "Linux":
-                        # TODO: Use system ffmpeg if available
-                        self.cfg.ffmpeg.path = os.path.join(app_dir, 'ffmpeg-linux-x86_64')
+                        self.cfg.ffmpeg.cmd = self.cfg.ffmpeg.path + self.cfg.ffmpeg.arguments
+                    elif platform.system() in ("Darwin", "Linux"):
                         self.cfg.ffmpeg.cmd = shlex.split(self.cfg.ffmpeg.path + self.cfg.ffmpeg.arguments)
                     else:
                         raise Exception('Platform not supported yet.')
 
                     self.logn(self.cfg.ffmpeg.cmd, where='file')
 
-                    if platform.system() == 'Windows':
-                        # (supresses the terminal, see: https://stackoverflow.com/questions/1813872/running-a-process-in-pythonw-with-popen-without-a-console)
-                        self.cfg.startupinfo = STARTUPINFO()
-                        self.cfg.startupinfo.dwFlags |= STARTF_USESHOWWINDOW
-                        with Popen(self.cfg.ffmpeg.cmd, stdout=PIPE, stderr=STDOUT, bufsize=1,universal_newlines=True,encoding='utf-8', startupinfo=self.cfg.startupinfo) as ffmpeg_proc:
-                            for line in ffmpeg_proc.stdout:
-                                self.logn('ffmpeg: ' + line)
-                    elif platform.system() in ("Darwin", "Linux"):
-                        with Popen(self.cfg.ffmpeg.cmd, stdout=PIPE, stderr=STDOUT, bufsize=1,universal_newlines=True,encoding='utf-8') as ffmpeg_proc:
-                            for line in ffmpeg_proc.stdout:
-                                self.logn('ffmpeg: ' + line)
+                    with Popen(
+                        self.cfg.ffmpeg.cmd,
+                        stdout=PIPE,
+                        stderr=STDOUT,
+                        bufsize=1,
+                        universal_newlines=True,
+                        encoding='utf-8',
+                        startupinfo=self.cfg.startupinfo
+                    ) as ffmpeg_proc:
+                        for line in ffmpeg_proc.stdout:
+                            self.logn('ffmpeg: ' + line)
+
                     if ffmpeg_proc.returncode > 0:
                         raise Exception(t('err_ffmpeg'))
+
                     self.logn(t('audio_conversion_finished'))
                     self.set_progress(1, 50)
                 except Exception as e:
@@ -941,7 +958,6 @@ class App(ctk.CTk):
                 # 2) Speaker identification (diarization) with pyannote
 
                 # Start Diarization:
-
                 if self.speaker_detection != 'none':
                     try:
                         self.logn()
@@ -1002,7 +1018,7 @@ class App(ctk.CTk):
                                     self.logn('PyAnnote ' + line, where='file')
                                     if line.strip() == "log: 'pyannote_xpu: cpu' was set.": # The string needs to be the same as in diarize.py `print("log: 'pyannote_xpu: cpu' was set.")`.
                                         self.pyannote_xpu = 'cpu'
-                                        config['pyannote_xpu'] = 'cpu'
+                                        app_config['pyannote_xpu'] = 'cpu'
 
                         if pyannote_proc.returncode > 0:
                             raise Exception('')
@@ -1013,7 +1029,7 @@ class App(ctk.CTk):
 
                         # write segments to log file 
                         for segment in diarization:
-                            line = f'{ms_to_str(self.start + segment["start"], include_ms=True)} - {ms_to_str(self.start + segment["end"], include_ms=True)} {segment["label"]}'
+                            line = f'{ms_to_str(self.cfg.start + segment["start"], include_ms=True)} - {ms_to_str(self.cfg.start + segment["end"], include_ms=True)} {segment["label"]}'
                             self.logn(line, where='file')
 
                         self.logn()
@@ -1037,7 +1053,7 @@ class App(ctk.CTk):
                 # add audio file path:
                 tag = d.createElement("meta")
                 tag.name = "audio_source"
-                tag.content = self.audio_file
+                tag.content = self.cfg.audio_file
                 d.head.appendChild(tag)
 
                 # add app version:
@@ -1056,7 +1072,7 @@ class App(ctk.CTk):
                 # header               
                 p = d.createElement('p')
                 p.setStyle('font-weight', '600')
-                p.appendText(Path(self.audio_file).stem) # use the name of the audio file (without extension) as the title
+                p.appendText(Path(self.cfg.audio_file).stem) # use the name of the audio file (without extension) as the title
                 main_body.appendChild(p)
 
                 # subheader
@@ -1068,7 +1084,7 @@ class App(ctk.CTk):
                 br = d.createElement('br')
                 s.appendChild(br)
 
-                s.appendText(t('doc_header_audio', file=self.audio_file))
+                s.appendText(t('doc_header_audio', file=self.cfg.audio_file))
                 br = d.createElement('br')
                 s.appendChild(br)
 
@@ -1091,31 +1107,30 @@ class App(ctk.CTk):
                     elif self.cfg.transcript.file_ext == 'txt':
                         txt = html_to_text(d)
                     elif self.cfg.transcript.file_ext == 'vtt':
-                        txt = html_to_webvtt(d, self.audio_file)
+                        txt = html_to_webvtt(d, self.cfg.audio_file)
                     else:
                         raise TypeError(f'Invalid file type "{self.cfg.transcript.file_ext}".')
                     try:
                         if txt != '':
-                            self.logn(self.cfg.transcript.file)
-                            with open(self.cfg.transcript.file, 'w', encoding="utf-8") as f:
+                            with open(self.cfg.my_transcript_file, 'w', encoding="utf-8") as f:
                                 f.write(txt)
                                 f.flush()
                             self.last_auto_save = datetime.datetime.now()
                     except Exception as e:
                         # other error while saving, maybe the file is already open in Word and cannot be overwritten
                         # try saving to a different filename
-                        transcript_path = Path(self.cfg.transcript.file)
-                        self.cfg.transcript.file = f'{transcript_path.parent}/{transcript_path.stem}_1{self.cfg.transcript.file_ext}'
-                        if os.path.exists(self.cfg.transcript.file):
+                        transcript_path = Path(self.cfg.my_transcript_file)
+                        self.cfg.my_transcript_file = f'{transcript_path.parent}/{transcript_path.stem}_1{self.cfg.transcript.file_ext}'
+                        if os.path.exists(self.cfg.my_transcript_file):
                             # the alternative filename also exists already, don't want to overwrite, giving up
                             raise Exception(t('rescue_saving_failed'))
                         else:
                             # htmlStr = d.asHTML()
-                            with open(self.cfg.transcript.file, 'w', encoding="utf-8") as f:
+                            with open(self.cfg.my_transcript_file, 'w', encoding="utf-8") as f:
                                 f.write(txt)
                                 f.flush()
                             self.logn()
-                            self.logn(t('rescue_saving', file=self.cfg.transcript.file), 'error', link=f'file://{self.cfg.transcript.file}')
+                            self.logn(t('rescue_saving', file=self.cfg.my_transcript_file), 'error', link=f'file://{self.cfg.my_transcript_file}')
                             self.last_auto_save = datetime.datetime.now()
 
                 try:
@@ -1129,7 +1144,7 @@ class App(ctk.CTk):
                         raise Exception('Platform not supported yet.')
                     model = WhisperModel(self.cfg.whisper.model,
                                          device=whisper_device,  
-                                         cpu_threads=number_threads, 
+                                         cpu_threads=platform_cfg.number_threads,
                                          compute_type=self.cfg.whisper.compute_type, 
                                          local_files_only=True)
                     self.logn('model loaded', where='file')
@@ -1140,9 +1155,9 @@ class App(ctk.CTk):
                     whisper_lang = self.language if self.language != 'auto' else None
    
                     try:
-                        self.vad_threshold = float(config['voice_activity_detection_threshold'])
+                        self.vad_threshold = float(app_config['voice_activity_detection_threshold'])
                     except:
-                        config['voice_activity_detection_threshold'] = '0.5'
+                        app_config['voice_activity_detection_threshold'] = '0.5'
                         self.vad_threshold = 0.5
                     
                     segments, info = model.transcribe(
@@ -1172,7 +1187,7 @@ class App(ctk.CTk):
                                 save_doc()
                                 self.logn()
                                 self.log(t('transcription_saved'))
-                                self.logn(self.cfg.transcript.file, link=f'file://{self.cfg.transcript.file}')
+                                self.logn(self.cfg.my_transcript_file, link=f'file://{self.cfg.my_transcript_file}')
   
                             raise Exception(t('err_user_cancelation')) 
 
@@ -1180,8 +1195,8 @@ class App(ctk.CTk):
                         start = round(segment.start * 1000.0)
                         end = round(segment.end * 1000.0)
                         # if we skipped a part at the beginning of the audio we have to add this here again, otherwise the timestaps will not match the original audio:
-                        orig_audio_start = self.start + start
-                        orig_audio_end = self.start + end
+                        orig_audio_start = self.cfg.start + start
+                        orig_audio_end = self.cfg.start + end
 
                         if self.timestamps:
                             ts = ms_to_str(orig_audio_start)
@@ -1200,8 +1215,8 @@ class App(ctk.CTk):
                             if first_segment:
                                 pause_str = pause_str.lstrip() + ' '
 
-                            orig_audio_start_pause = self.start + last_segment_end
-                            orig_audio_end_pause = self.start + start
+                            orig_audio_start_pause = self.cfg.start + last_segment_end
+                            orig_audio_end_pause = self.cfg.start + start
                             a = d.createElement('a')
                             a.name = f'ts_{orig_audio_start_pause}_{orig_audio_end_pause}_{speaker}'
                             a.appendText(pause_str)
@@ -1305,19 +1320,19 @@ class App(ctk.CTk):
                     self.logn()
                     self.logn()
                     self.logn(t('transcription_finished'), 'highlight')
-                    if self.transcript_file != self.cfg.transcript.file: # used alternative filename because saving under the initial name failed
+                    if self.cfg.transcript.file != self.cfg.my_transcript_file: # used alternative filename because saving under the initial name failed
                         self.log(t('rescue_saving'))
-                        self.logn(self.cfg.transcript.file, link=f'file://{self.cfg.transcript.file}')
+                        self.logn(self.cfg.my_transcript_file, link=f'file://{self.cfg.my_transcript_file}')
                     else:
                         self.log(t('transcription_saved'))
-                        self.logn(self.cfg.transcript.file, link=f'file://{self.cfg.transcript.file}')
+                        self.logn(self.cfg.my_transcript_file, link=f'file://{self.cfg.my_transcript_file}')
                     # log duration of the whole process in minutes
                     self.proc_time = datetime.datetime.now() - self.proc_start_time
                     self.logn(t('trancription_time', duration=int(self.proc_time.total_seconds() / 60))) 
                     
                     # auto open transcript in editor
                     if (self.auto_edit_transcript == 'True') and (self.cfg.transcript.file_ext == 'html'):
-                        self.launch_editor(self.cfg.transcript.file)
+                        self.launch_editor(self.cfg.my_transcript_file)
                 
                 except Exception as e:
                     self.logn()
@@ -1381,12 +1396,12 @@ class App(ctk.CTk):
         #if messagebox.askokcancel("Quit", "Do you want to quit?"):
         try:
             # remember some settings for the next run
-            config['last_language'] = self.option_menu_language.get()
-            config['last_speaker'] = self.option_menu_speaker.get()
-            config['last_quality'] = self.option_menu_quality.get()
-            config['last_pause'] = self.option_menu_pause.get()
-            config['last_overlapping'] = self.check_box_overlapping.get()
-            config['last_timestamps'] = self.check_box_timestamps.get()
+            app_config['last_language'] = self.option_menu_language.get()
+            app_config['last_speaker'] = self.option_menu_speaker.get()
+            app_config['last_quality'] = self.option_menu_quality.get()
+            app_config['last_pause'] = self.option_menu_pause.get()
+            app_config['last_overlapping'] = self.check_box_overlapping.get()
+            app_config['last_timestamps'] = self.check_box_timestamps.get()
 
             save_config()
         finally:
