@@ -103,9 +103,11 @@ cfg = DefaultMunch(None)
 cfg.transcript = DefaultMunch(None)
 cfg.whisper = DefaultMunch(None)
 cfg.ffmpeg = DefaultMunch(None)
-cfg.diarize = DefaultMunch(None)
+cfg.pyannote = DefaultMunch(None)
 cfg.transcript.file = ''
 cfg.audio_file= ''
+cfg.tmpdir = TemporaryDirectory('noScribe')
+cfg.tmp_audio_file = os.path.join(cfg.tmpdir.name, 'tmp_audio.wav')
 
 cfg.startupinfo = None
 if platform_cfg.system == 'Windows':
@@ -120,7 +122,6 @@ elif platform_cfg.system == "Linux":
     cfg.ffmpeg.path = os.path.join(app_dir, 'ffmpeg-linux-x86_64')
 else:
     raise Exception('Platform not supported yet.')
-
 
 try:
     with open(config_file, 'r') as file:
@@ -166,6 +167,33 @@ if platform.system() in ('Windows', 'Linux'):
             del app_config['pyannote_xpu']
     except:
         pass
+
+if platform.system() == "Darwin": # = MAC
+    # if (platform.mac_ver()[0] >= '12.3' and
+    #     # torch.backends.mps.is_built() and # not necessary since depends on packaged PyTorch
+    #     torch.backends.mps.is_available()):
+    # Default to mps on 12.3 and newer, else cpu
+    xpu = get_config('pyannote_xpu', 'mps' if platform.mac_ver()[0] >= '12.3' else 'cpu')
+    cfg.pyannote.xpu = 'mps' if xpu == 'mps' else 'cpu'
+elif platform.system() in ('Windows', 'Linux'):
+    # Use cuda if available and not set otherwise in config.yml, fallback to cpu: 
+    xpu = get_config('pyannote_xpu', 'cuda' if get_cuda_device_count() > 0 else 'cpu')
+    cfg.pyannote.xpu = 'cuda' if xpu == 'cuda' else 'cpu'
+    whisper_xpu = get_config('whisper_xpu', 'cuda' if get_cuda_device_count() > 0 else 'cpu')
+    cfg.whisper_xpu = 'cuda' if whisper_xpu == 'cuda' else 'cpu'
+else:
+    raise Exception('Platform not supported yet.')
+
+cfg.pyannote.output = os.path.join(cfg.tmpdir.name, 'diarize_out.yaml')
+diarize_abspath = ''
+if platform.system() == 'Windows':
+    diarize_abspath = os.path.join(app_dir, 'diarize.exe')
+if platform.system() == 'Darwin': # = MAC
+    # No check for arm64 or x86_64 necessary, since the correct version will be compiled and bundled
+    diarize_abspath = os.path.join(app_dir, '..', 'MacOS', 'diarize')
+if not (diarize_abspath and os.path.exists(diarize_abspath)): # Run the compiled version of diarize if it exists, otherwise the python script:
+    diarize_abspath = 'python ' + os.path.join(app_dir, 'diarize.py')
+cfg.pyannote.abspath = diarize_abspath
 
 app_config['app_version'] = app_version
 
@@ -416,6 +444,7 @@ class App(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
         self.cfg = cfg
+        self.cfg_is_ready = False
         self.log_file = None
         self.cancel = False # if set to True, transcription will be canceled
 
@@ -759,154 +788,11 @@ class App(ctk.CTk):
         # We put this in a seperate thread so that it does not block the main ui
 
         try:
-            # collect all the options
-            option_info = ''
-
-            if self.cfg.audio_file == '':
-                self.logn(t('err_no_audio_file'), 'error')
-                tk.messagebox.showerror(title='noScribe', message=t('err_no_audio_file'))
-                return
-
-            if self.cfg.transcript.file == '':
-                self.logn(t('err_no_transcript_file'), 'error')
-                tk.messagebox.showerror(title='noScribe', message=t('err_no_transcript_file'))
-                return
-
-            self.cfg.my_transcript_file = self.cfg.transcript.file
-            self.cfg.transcript.file_ext = os.path.splitext(self.cfg.transcript.file)[1][1:]
 
             # create log file
             if not os.path.exists(f'{config_dir}/log'):
                 os.makedirs(f'{config_dir}/log')
             self.log_file = open(f'{config_dir}/log/{Path(self.cfg.my_transcript_file).stem}.log', 'w', encoding="utf-8")
-
-            # options for faster-whisper
-            self.cfg.whisper.precise_beam_size = get_config('whisper_precise_beam_size', 1)
-            self.logn(f'whisper precise beam size: {self.cfg.precise_beam_size}', where='file')
-
-            self.cfg.whisper.fast_beam_size = get_config('whisper_fast_beam_size', 1)
-            self.logn(f'whisper fast beam size: {self.cfg.whisper.fast_beam_size}', where='file')
-
-            self.cfg.whisper.precise_temperature = get_config('whisper_precise_temperature', 0.0)
-            self.logn(f'whisper precise temperature: {self.cfg.whisper.precise_temperature}', where='file')
-
-            self.cfg.whisper.fast_temperature = get_config('whisper_fast_temperature', 0.0)
-            self.logn(f'whisper fast temperature: {self.cfg.whisper.fast_temperature}', where='file')
-
-            self.cfg.whisper.precise_compute_type = get_config('whisper_precise_compute_type', 'default')
-            self.logn(f'whisper precise compute type: {self.cfg.whisper.precise_compute_type}', where='file')
-
-            self.cfg.whisper.fast_compute_type = get_config('whisper_fast_compute_type', 'default')
-            self.logn(f'whisper fast compute type: {self.cfg.whisper.fast_compute_type}', where='file')
-
-            self.timestamp_interval = get_config('timestamp_interval', 60_000) # default: add a timestamp every minute
-            self.logn(f'timestamp_interval: {self.timestamp_interval}', where='file')
-
-            self.timestamp_color = get_config('timestamp_color', '#78909C') # default: light gray/blue
-            self.logn(f'timestamp_color: {self.timestamp_color}', where='file')
-
-            # get UI settings
-            val = self.entry_start.get()
-            if val == '':
-                self.cfg.start = 0
-            else:
-                self.cfg.start = millisec(val)
-                option_info += f'{t("label_start")} {val} | ' 
-
-            val = self.entry_stop.get()
-            if val == '':
-                self.cfg.stop = '0'
-            else:
-                self.cfg.stop = millisec(val)
-                option_info += f'{t("label_stop")} {val} | '
-
-            if self.option_menu_quality.get() == 'fast':
-                self.cfg.whisper.model = os.path.join(app_dir, 'models', 'faster-whisper-small')
-                self.cfg.whisper.beam_size = self.cfg.whisper.fast_beam_size
-                self.cfg.whisper.temperature = self.cfg.whisper.fast_temperature
-                self.cfg.whisper.compute_type = self.cfg.whisper.fast_compute_type
-            else:
-                self.cfg.whisper.model = os.path.join(app_dir, 'models', 'faster-whisper-large-v2')
-                self.cfg.whisper.beam_size = self.cfg.whisper.precise_beam_size
-                self.cfg.whisper.temperature = self.cfg.whisper.precise_temperature
-                self.cfg.whisper.compute_type = self.cfg.whisper.precise_compute_type
-            option_info += f'{t("label_quality")} {self.option_menu_quality.get()} | '
-
-            try:
-                with open(os.path.join(app_dir, 'prompt.yml'), 'r', encoding='utf-8') as file:
-                    prompts = yaml.safe_load(file)
-            except:
-                prompts = {}
-
-            self.language = self.option_menu_language.get()
-            if self.language != 'auto':
-                self.language = self.language[0:3].strip()
-
-            self.cfg.whisper.prompt = prompts.get(self.language, '') # Fetch language prompt, default to empty string
-
-            option_info += f'{t("label_language")} {self.language} | '
-
-            self.speaker_detection = self.option_menu_speaker.get()
-            option_info += f'{t("label_speaker")} {self.speaker_detection} | '
-
-            self.overlapping_speech_selected = self.check_box_overlapping.get()
-            option_info += f'{t("label_overlapping")} {self.overlapping_speech_selected} | '
-
-            self.timestamps = self.check_box_timestamps.get()
-            option_info += f'{t("label_timestamps")} {self.timestamps} | '
-
-            self.pause = self.option_menu_pause._values.index(self.option_menu_pause.get())
-            option_info += f'{t("label_pause")} {self.pause}'
-
-            self.pause_marker = get_config('pause_seconds_marker', '.') # Default to . if marker not in config
-
-            # Default to True if auto save not in config or invalid value
-            self.auto_save = False if get_config('auto_save', 'True') == 'False' else True 
-            
-            # Open the finished transript in the editor automatically?
-            self.auto_edit_transcript = get_config('auto_edit_transcript', 'True')
-            
-            # Check for invalid vtt options
-            if self.cfg.transcript.file_ext == 'vtt' and (self.pause > 0 or self.overlapping_speech_selected or self.timestamps):
-                self.logn()
-                self.logn(t('err_vtt_invalid_options'), 'error')
-                self.pause = 0
-                self.overlapping_speech_selected = False
-                self.timestamps = False           
-
-            if platform.system() == "Darwin": # = MAC
-                # if (platform.mac_ver()[0] >= '12.3' and
-                #     # torch.backends.mps.is_built() and # not necessary since depends on packaged PyTorch
-                #     torch.backends.mps.is_available()):
-                # Default to mps on 12.3 and newer, else cpu
-                xpu = get_config('pyannote_xpu', 'mps' if platform.mac_ver()[0] >= '12.3' else 'cpu')
-                self.pyannote_xpu = 'mps' if xpu == 'mps' else 'cpu'
-            elif platform.system() in ('Windows', 'Linux'):
-                # Use cuda if available and not set otherwise in config.yml, fallback to cpu: 
-                xpu = get_config('pyannote_xpu', 'cuda' if get_cuda_device_count() > 0 else 'cpu')
-                self.pyannote_xpu = 'cuda' if xpu == 'cuda' else 'cpu'
-                whisper_xpu = get_config('whisper_xpu', 'cuda' if get_cuda_device_count() > 0 else 'cpu')
-                self.cfg.whisper_xpu = 'cuda' if whisper_xpu == 'cuda' else 'cpu'
-            else:
-                raise Exception('Platform not supported yet.')
-
-            # log CPU capabilities
-            self.logn("=== CPU FEATURES ===", where="file")
-            if platform.system() == 'Windows':
-                self.logn("System: Windows", where="file")
-                for key, value in cpufeature.CPUFeature.items():
-                    self.logn('    {:24}: {}'.format(key, value), where="file")
-            elif platform.system() == "Darwin": # = MAC
-                self.logn(f"System: MAC {platform.machine()}", where="file")
-                if platform.mac_ver()[0] >= '12.3': # MPS needs macOS 12.3+
-                    if app_config['pyannote_xpu'] == 'mps':
-                        self.logn("macOS version >= 12.3:\nUsing MPS (with PYTORCH_ENABLE_MPS_FALLBACK enabled)", where="file")
-                    elif app_config['pyannote_xpu'] == 'cpu':
-                        self.logn("macOS version >= 12.3:\nUser selected to use CPU (results will be better, but you might wanna make yourself a coffee)", where="file")
-                    else:
-                        self.logn("macOS version >= 12.3:\nInvalid option for 'pyannote_xpu' in config.yml (should be 'mps' or 'cpu')\nYou might wanna change this\nUsing MPS anyway (with PYTORCH_ENABLE_MPS_FALLBACK enabled)", where="file")
-                else:
-                    self.logn("macOS version < 12.3:\nMPS not available: Using CPU\nPerformance might be poor\nConsider updating macOS, if possible", where="file")
 
             try:
 
@@ -917,19 +803,6 @@ class App(ctk.CTk):
                     self.logn()
                     self.logn(t('start_audio_conversion'), 'highlight')
                 
-                    if int(self.cfg.stop) > 0: # transcribe only part of the audio
-                        self.cfg.ffmpeg.end_pos_cmd = f'-to {self.cfg.stop}ms'
-                    else: # transcribe until the end
-                        self.cfg.ffmpeg.end_pos_cmd = ''
-
-                    self.cfg.ffmpeg.arguments = f' -loglevel warning -y -ss {self.cfg.start}ms {self.cfg.ffmpeg.end_pos_cmd} -i \"{self.cfg.audio_file}\" -ar 16000 -ac 1 -c:a pcm_s16le {self.cfg.tmp_audio_file}'
-                    if platform.system() == 'Windows':
-                        self.cfg.ffmpeg.cmd = self.cfg.ffmpeg.path + self.cfg.ffmpeg.arguments
-                    elif platform.system() in ("Darwin", "Linux"):
-                        self.cfg.ffmpeg.cmd = shlex.split(self.cfg.ffmpeg.path + self.cfg.ffmpeg.arguments)
-                    else:
-                        raise Exception('Platform not supported yet.')
-
                     self.logn(self.cfg.ffmpeg.cmd, where='file')
 
                     with Popen(
@@ -965,38 +838,29 @@ class App(ctk.CTk):
                         self.logn(t('loading_pyannote'))
                         self.set_progress(1, 100)
 
-                        self.cfg.diarize.output = os.path.join(self.cfg.tmpdir.name, 'diarize_out.yaml')
-                        if platform.system() == 'Windows':
-                            diarize_abspath = os.path.join(app_dir, 'diarize.exe')
-                        elif platform.system() == 'Darwin': # = MAC
-                            # No check for arm64 or x86_64 necessary, since the correct version will be compiled and bundled
-                            diarize_abspath = os.path.join(app_dir, '..', 'MacOS', 'diarize')
-                        if not ('diarize_abspath' in globals() or os.path.exists(diarize_abspath)): # Run the compiled version of diarize if it exists, otherwise the python script:
-                            diarize_abspath = 'python ' + os.path.join(app_dir, 'diarize.py')
-                        self.cfg.diarize.abspath = diarize_abspath
-                        self.cfg.diarize.cmd = f'{self.cfg.diarize.abspath} {self.pyannote_xpu} "{self.cfg.tmp_audio_file}" "{self.cfg.diarize.output}" {self.speaker_detection}'
-                        self.cfg.diarize.env = None
-                        if self.pyannote_xpu == 'mps':
-                            self.cfg.diarize.env = os.environ.copy()
-                            self.cfg.diarize.env["PYTORCH_ENABLE_MPS_FALLBACK"] = str(1) # Necessary since some operators are not implemented for MPS yet.
-                        self.logn(self.cfg.diarize.cmd, where='file')
+                        self.cfg.pyannote.cmd = f'{self.cfg.pyannote.abspath} {self.cfg.pyannote.xpu} "{self.cfg.tmp_audio_file}" "{self.cfg.pyannote.output}" {self.speaker_detection}'
+                        self.cfg.pyannote.env = None
+                        if self.cfg.pyannote.xpu == 'mps':
+                            self.cfg.pyannote.env = os.environ.copy()
+                            self.cfg.pyannote.env["PYTORCH_ENABLE_MPS_FALLBACK"] = str(1) # Necessary since some operators are not implemented for MPS yet.
+                        self.logn(self.cfg.pyannote.cmd, where='file')
 
                         if platform.system() == 'Windows':
                             # (supresses the terminal, see: https://stackoverflow.com/questions/1813872/running-a-process-in-pythonw-with-popen-without-a-console)
                             self.cfg.startupinfo = STARTUPINFO()
                             self.cfg.startupinfo.dwFlags |= STARTF_USESHOWWINDOW
                         elif platform.system() in ('Darwin', "Linux"): # = MAC
-                            self.cfg.diarize.cmd = shlex.split(self.cfg.diarize.cmd)
+                            self.cfg.pyannote.cmd = shlex.split(self.cfg.pyannote.cmd)
                             self.cfg.startupinfo = None
                         else:
                             raise Exception('Platform not supported yet.')
 
-                        with Popen(self.cfg.diarize.cmd,
+                        with Popen(self.cfg.pyannote.cmd,
                                    stdout=PIPE,
                                    stderr=STDOUT,
                                    encoding='UTF-8',
                                    startupinfo=self.cfg.startupinfo,
-                                   env=self.cfg.diarize.env,
+                                   env=self.cfg.pyannote.env,
                                    close_fds=True) as pyannote_proc:
                             for line in pyannote_proc.stdout:
                                 if self.cancel:
@@ -1017,14 +881,14 @@ class App(ctk.CTk):
                                 elif line.startswith('log: '):
                                     self.logn('PyAnnote ' + line, where='file')
                                     if line.strip() == "log: 'pyannote_xpu: cpu' was set.": # The string needs to be the same as in diarize.py `print("log: 'pyannote_xpu: cpu' was set.")`.
-                                        self.pyannote_xpu = 'cpu'
+                                        self.cfg.pyannote.xpu = 'cpu'
                                         app_config['pyannote_xpu'] = 'cpu'
 
                         if pyannote_proc.returncode > 0:
                             raise Exception('')
 
                         # load diarization results
-                        with open(self.cfg.diarize.output, 'r') as file:
+                        with open(self.cfg.pyannote.output, 'r') as file:
                             diarization = yaml.safe_load(file)
 
                         # write segments to log file 
@@ -1088,7 +952,7 @@ class App(ctk.CTk):
                 br = d.createElement('br')
                 s.appendChild(br)
 
-                s.appendText(f'({option_info})')
+                s.appendText(f'({self.cfg.option_info})')
 
                 p.appendChild(s)
                 main_body.appendChild(p)
@@ -1152,7 +1016,7 @@ class App(ctk.CTk):
                     if self.cancel:
                         raise Exception(t('err_user_cancelation')) 
 
-                    whisper_lang = self.language if self.language != 'auto' else None
+                    whisper_lang = self.cfg.language if self.cfg.language != 'auto' else None
    
                     try:
                         self.vad_threshold = float(app_config['voice_activity_detection_threshold'])
@@ -1167,7 +1031,7 @@ class App(ctk.CTk):
                         vad_parameters=dict(min_silence_duration_ms=200, 
                                             threshold=self.vad_threshold))
 
-                    if self.language == "auto":
+                    if self.cfg.language == "auto":
                         self.logn("Detected language '%s' with probability %f" % (info.language, info.language_probability))
 
                     if self.cancel:
@@ -1357,29 +1221,175 @@ class App(ctk.CTk):
             # hide progress bar
             self.progress_bar.pack_forget()
 
+    def collect_settings(self):
+        # collect all the options
+        self.cfg.option_info = ''
+
+        if self.cfg.audio_file == '':
+            self.logn(t('err_no_audio_file'), 'error')
+            tk.messagebox.showerror(title='noScribe', message=t('err_no_audio_file'))
+            return
+
+        if self.cfg.transcript.file == '':
+            self.logn(t('err_no_transcript_file'), 'error')
+            tk.messagebox.showerror(title='noScribe', message=t('err_no_transcript_file'))
+            return
+
+        self.cfg.my_transcript_file = self.cfg.transcript.file
+        self.cfg.transcript.file_ext = os.path.splitext(self.cfg.transcript.file)[1][1:]
+
+        # options for faster-whisper
+        self.cfg.whisper.precise_beam_size = get_config('whisper_precise_beam_size', 1)
+        self.logn(f'whisper precise beam size: {self.cfg.precise_beam_size}', where='file')
+
+        self.cfg.whisper.fast_beam_size = get_config('whisper_fast_beam_size', 1)
+        self.logn(f'whisper fast beam size: {self.cfg.whisper.fast_beam_size}', where='file')
+
+        self.cfg.whisper.precise_temperature = get_config('whisper_precise_temperature', 0.0)
+        self.logn(f'whisper precise temperature: {self.cfg.whisper.precise_temperature}', where='file')
+
+        self.cfg.whisper.fast_temperature = get_config('whisper_fast_temperature', 0.0)
+        self.logn(f'whisper fast temperature: {self.cfg.whisper.fast_temperature}', where='file')
+
+        self.cfg.whisper.precise_compute_type = get_config('whisper_precise_compute_type', 'default')
+        self.logn(f'whisper precise compute type: {self.cfg.whisper.precise_compute_type}', where='file')
+
+        self.cfg.whisper.fast_compute_type = get_config('whisper_fast_compute_type', 'default')
+        self.logn(f'whisper fast compute type: {self.cfg.whisper.fast_compute_type}', where='file')
+
+        self.timestamp_interval = get_config('timestamp_interval', 60_000) # default: add a timestamp every minute
+        self.logn(f'timestamp_interval: {self.timestamp_interval}', where='file')
+
+        self.timestamp_color = get_config('timestamp_color', '#78909C') # default: light gray/blue
+        self.logn(f'timestamp_color: {self.timestamp_color}', where='file')
+
+        # get UI settings
+        val = self.entry_start.get()
+        if val == '':
+            self.cfg.start = 0
+        else:
+            self.cfg.start = millisec(val)
+            self.cfg.option_info += f'{t("label_start")} {val} | ' 
+
+        val = self.entry_stop.get()
+        if val == '':
+            self.cfg.stop = '0'
+        else:
+            self.cfg.stop = millisec(val)
+            self.cfg.option_info += f'{t("label_stop")} {val} | '
+
+        if self.option_menu_quality.get() == 'fast':
+            self.cfg.whisper.model = os.path.join(app_dir, 'models', 'faster-whisper-small')
+            self.cfg.whisper.beam_size = self.cfg.whisper.fast_beam_size
+            self.cfg.whisper.temperature = self.cfg.whisper.fast_temperature
+            self.cfg.whisper.compute_type = self.cfg.whisper.fast_compute_type
+        else:
+            self.cfg.whisper.model = os.path.join(app_dir, 'models', 'faster-whisper-large-v2')
+            self.cfg.whisper.beam_size = self.cfg.whisper.precise_beam_size
+            self.cfg.whisper.temperature = self.cfg.whisper.precise_temperature
+            self.cfg.whisper.compute_type = self.cfg.whisper.precise_compute_type
+        self.cfg.option_info += f'{t("label_quality")} {self.option_menu_quality.get()} | '
+
+        try:
+            with open(os.path.join(app_dir, 'prompt.yml'), 'r', encoding='utf-8') as file:
+                prompts = yaml.safe_load(file)
+        except:
+            prompts = {}
+
+        self.cfg.language = self.option_menu_language.get()
+        if self.cfg.language != 'auto':
+            self.cfg.language = self.cfg.language[0:3].strip()
+
+        self.cfg.whisper.prompt = prompts.get(self.cfg.language, '') # Fetch language prompt, default to empty string
+
+        self.cfg.option_info += f'{t("label_language")} {self.cfg.language} | '
+
+        self.speaker_detection = self.option_menu_speaker.get()
+        self.cfg.option_info += f'{t("label_speaker")} {self.speaker_detection} | '
+
+        self.overlapping_speech_selected = self.check_box_overlapping.get()
+        self.cfg.option_info += f'{t("label_overlapping")} {self.overlapping_speech_selected} | '
+
+        self.timestamps = self.check_box_timestamps.get()
+        self.cfg.option_info += f'{t("label_timestamps")} {self.timestamps} | '
+
+        self.pause = self.option_menu_pause._values.index(self.option_menu_pause.get())
+        self.cfg.option_info += f'{t("label_pause")} {self.pause}'
+
+        self.pause_marker = get_config('pause_seconds_marker', '.') # Default to . if marker not in config
+
+        # Default to True if auto save not in config or invalid value
+        self.auto_save = False if get_config('auto_save', 'True') == 'False' else True 
+        
+        # Open the finished transript in the editor automatically?
+        self.auto_edit_transcript = get_config('auto_edit_transcript', 'True')
+        
+        # Check for invalid vtt options
+        if self.cfg.transcript.file_ext == 'vtt' and (self.pause > 0 or self.overlapping_speech_selected or self.timestamps):
+            self.logn()
+            self.logn(t('err_vtt_invalid_options'), 'error')
+            self.pause = 0
+            self.overlapping_speech_selected = False
+            self.timestamps = False           
+
+        # log CPU capabilities
+        self.logn("=== CPU FEATURES ===", where="file")
+        if platform.system() == 'Windows':
+            self.logn("System: Windows", where="file")
+            for key, value in cpufeature.CPUFeature.items():
+                self.logn('    {:24}: {}'.format(key, value), where="file")
+        elif platform.system() == "Darwin": # = MAC
+            self.logn(f"System: MAC {platform.machine()}", where="file")
+            if platform.mac_ver()[0] >= '12.3': # MPS needs macOS 12.3+
+                if app_config['pyannote_xpu'] == 'mps':
+                    self.logn("macOS version >= 12.3:\nUsing MPS (with PYTORCH_ENABLE_MPS_FALLBACK enabled)", where="file")
+                elif app_config['pyannote_xpu'] == 'cpu':
+                    self.logn("macOS version >= 12.3:\nUser selected to use CPU (results will be better, but you might wanna make yourself a coffee)", where="file")
+                else:
+                    self.logn("macOS version >= 12.3:\nInvalid option for 'pyannote_xpu' in config.yml (should be 'mps' or 'cpu')\nYou might wanna change this\nUsing MPS anyway (with PYTORCH_ENABLE_MPS_FALLBACK enabled)", where="file")
+            else:
+                self.logn("macOS version < 12.3:\nMPS not available: Using CPU\nPerformance might be poor\nConsider updating macOS, if possible", where="file")
+
+        if int(self.cfg.stop) > 0: # transcribe only part of the audio
+            self.cfg.ffmpeg.end_pos_cmd = f'-to {self.cfg.stop}ms'
+        else: # transcribe until the end
+            self.cfg.ffmpeg.end_pos_cmd = ''
+
+        self.cfg.ffmpeg.arguments = f' -loglevel warning -y -ss {self.cfg.start}ms {self.cfg.ffmpeg.end_pos_cmd} -i \"{self.cfg.audio_file}\" -ar 16000 -ac 1 -c:a pcm_s16le {self.cfg.tmp_audio_file}'
+        if platform.system() == 'Windows':
+            self.cfg.ffmpeg.cmd = self.cfg.ffmpeg.path + self.cfg.ffmpeg.arguments
+        elif platform.system() in ("Darwin", "Linux"):
+            self.cfg.ffmpeg.cmd = shlex.split(self.cfg.ffmpeg.path + self.cfg.ffmpeg.arguments)
+        else:
+            #raise Exception('Platform not supported yet.')
+            return
+
+        self.cfg_is_ready = True
+
+
     def button_start_event(self):
-        self.cfg.tmpdir = TemporaryDirectory('noScribe')
-        self.cfg.tmp_audio_file = os.path.join(self.cfg.tmpdir.name, 'tmp_audio.wav')
+        self.collect_settings()
 
-        self.proc_start_time = datetime.datetime.now()
-        self.cancel = False
+        if self.cfg_is_ready:
+            self.proc_start_time = datetime.datetime.now()
+            self.cancel = False
 
-        # Show the stop button
-        self.start_button.pack_forget() # hide
-        self.stop_button.pack(padx=20, pady=[0,30], expand=True, fill='x', anchor='sw')
+            # Show the stop button
+            self.start_button.pack_forget() # hide
+            self.stop_button.pack(padx=20, pady=[0,30], expand=True, fill='x', anchor='sw')
 
-        # Show the progress bar
-        self.progress_bar.set(0)
-        self.progress_bar.pack(padx=[10,10], pady=[10,10], expand=True, fill='x', anchor='sw', side='left')
-        # self.progress_bar.pack(padx=[0,10], pady=[10,25], expand=True, fill='x', anchor='sw', side='left')
-        # self.progress_bar.pack(padx=20, pady=[10,20], expand=True, fill='both')
+            # Show the progress bar
+            self.progress_bar.set(0)
+            self.progress_bar.pack(padx=[10,10], pady=[10,10], expand=True, fill='x', anchor='sw', side='left')
+            # self.progress_bar.pack(padx=[0,10], pady=[10,25], expand=True, fill='x', anchor='sw', side='left')
+            # self.progress_bar.pack(padx=20, pady=[10,20], expand=True, fill='both')
 
-        wkr = Thread(target=self.transcription_worker)
-        wkr.start()
+            wkr = Thread(target=self.transcription_worker)
+            wkr.start()
 
-        while wkr.is_alive():
-            self.update()
-            time.sleep(0.1)
+            while wkr.is_alive():
+                self.update()
+                time.sleep(0.1)
     
     # End main function Button Start        
     ################################################################################################
