@@ -846,13 +846,8 @@ class App(ctk.CTk):
                             self.cfg.pyannote.env["PYTORCH_ENABLE_MPS_FALLBACK"] = str(1) # Necessary since some operators are not implemented for MPS yet.
                         self.logn(self.cfg.pyannote.cmd, where='file')
 
-                        if platform.system() == 'Windows':
-                            # (supresses the terminal, see: https://stackoverflow.com/questions/1813872/running-a-process-in-pythonw-with-popen-without-a-console)
-                            self.cfg.startupinfo = STARTUPINFO()
-                            self.cfg.startupinfo.dwFlags |= STARTF_USESHOWWINDOW
-                        elif platform.system() in ('Darwin', "Linux"): # = MAC
+                        if platform.system() in ('Darwin', "Linux"): # = MAC
                             self.cfg.pyannote.cmd = shlex.split(self.cfg.pyannote.cmd)
-                            self.cfg.startupinfo = None
                         else:
                             raise Exception('Platform not supported yet.')
 
