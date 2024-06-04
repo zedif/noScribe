@@ -839,17 +839,6 @@ class App(ctk.CTk):
                         self.logn(t('loading_pyannote'))
                         self.set_progress(1, 100)
 
-                        self.cfg.pyannote.cmd = f'{self.cfg.pyannote.abspath} {self.cfg.pyannote.xpu} "{self.cfg.tmp_audio_file}" "{self.cfg.pyannote.output}" {self.speaker_detection}'
-                        self.cfg.pyannote.env = None
-                        if self.cfg.pyannote.xpu == 'mps':
-                            self.cfg.pyannote.env = os.environ.copy()
-                            self.cfg.pyannote.env["PYTORCH_ENABLE_MPS_FALLBACK"] = str(1) # Necessary since some operators are not implemented for MPS yet.
-                        self.logn(self.cfg.pyannote.cmd, where='file')
-
-                        if platform.system() in ('Darwin', "Linux"): # = MAC
-                            self.cfg.pyannote.cmd = shlex.split(self.cfg.pyannote.cmd)
-                        else:
-                            raise Exception('Platform not supported yet.')
 
                         with Popen(self.cfg.pyannote.cmd,
                                    stdout=PIPE,
@@ -1301,6 +1290,7 @@ class App(ctk.CTk):
         self.cfg.option_info += f'{t("label_language")} {self.cfg.language} | '
 
         self.speaker_detection = self.option_menu_speaker.get()
+        self.cfg.speaker_detection = self.speaker_detection
         self.cfg.option_info += f'{t("label_speaker")} {self.speaker_detection} | '
 
         self.overlapping_speech_selected = self.check_box_overlapping.get()
@@ -1360,7 +1350,18 @@ class App(ctk.CTk):
             #raise Exception('Platform not supported yet.')
             return
 
+        self.cfg.pyannote.cmd = f'{self.cfg.pyannote.abspath} {self.cfg.pyannote.xpu} "{self.cfg.tmp_audio_file}" "{self.cfg.pyannote.output}" {self.cfg.speaker_detection}'
+        self.cfg.pyannote.env = None
+        if self.cfg.pyannote.xpu == 'mps':
+            self.cfg.pyannote.env = os.environ.copy()
+            self.cfg.pyannote.env["PYTORCH_ENABLE_MPS_FALLBACK"] = str(1) # Necessary since some operators are not implemented for MPS yet.
+        self.logn(self.cfg.pyannote.cmd, where='file')
+
+        if platform.system() in ('Darwin', "Linux"): # = MAC
+            self.cfg.pyannote.cmd = shlex.split(self.cfg.pyannote.cmd)
+
         self.cfg_is_ready = True
+
 
     def store_settings(self):
         try:
