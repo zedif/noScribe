@@ -106,8 +106,9 @@ cfg.ffmpeg = DefaultMunch(None)
 cfg.pyannote = DefaultMunch(None)
 cfg.transcript.file = ''
 cfg.audio_file= ''
-cfg.tmpdir = TemporaryDirectory('noScribe')
-cfg.tmp_audio_file = os.path.join(cfg.tmpdir.name, 'tmp_audio.wav')
+tmpdir = TemporaryDirectory('noScribe')
+cfg.tmpdir = tmpdir.name
+cfg.tmp_audio_file = os.path.join(cfg.tmpdir, 'tmp_audio.wav')
 
 cfg.startupinfo = None
 if platform_cfg.system == 'Windows':
@@ -184,7 +185,7 @@ elif platform.system() in ('Windows', 'Linux'):
 else:
     raise Exception('Platform not supported yet.')
 
-cfg.pyannote.output = os.path.join(cfg.tmpdir.name, 'diarize_out.yaml')
+cfg.pyannote.output = os.path.join(cfg.tmpdir, 'diarize_out.yaml')
 diarize_abspath = ''
 if platform.system() == 'Windows':
     diarize_abspath = os.path.join(app_dir, 'diarize.exe')
@@ -1366,9 +1367,17 @@ class App(ctk.CTk):
 
         self.cfg_is_ready = True
 
+    def store_settings(self):
+        try:
+            with open('./cfg.yaml', 'w') as file:
+                yaml.safe_dump(self.cfg, file)
+        except Exception as e:
+            print(f'Failed to write configuration file: {e}')
+
 
     def button_start_event(self):
         self.collect_settings()
+        self.store_settings()
 
         if self.cfg_is_ready:
             self.proc_start_time = datetime.datetime.now()
