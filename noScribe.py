@@ -22,6 +22,7 @@ if sys.stdout is None:
 if sys.stderr is None:
     sys.stderr = open(os.devnull, "w")
 
+from contextlib import contextmanager
 import tkinter as tk
 import customtkinter as ctk
 from tkHyperlinkManager import HyperlinkManager
@@ -413,7 +414,67 @@ def html_to_webvtt(parser: AdvancedHTMLParser.AdvancedHTMLParser, media_path: st
                 txt = vtt_escape(html_node_to_text(segment))
                 vtt += f'{i+1}\n{start} --> {end}\n<v {spkr}>{txt.lstrip()}\n\n'
     return vtt
-    
+
+
+class TranscriptSaver(object):
+
+    def __init__(self, file_path, fmt, audio_file_path, logn_callback):
+        self.fmt = fmt
+        self._validate_format()
+        self.file_path = file_path
+        self.audio_file_path = audio_file_path
+        self.logn_callback = logn_callback
+        self.last_save = datetime.datetime.now()
+
+    def _validate_format(self):
+        if self.fmt not in ['html', 'txt', 'vtt']:
+            raise TypeError(f'Invalid file type "{fmt}".')
+
+    def save(self, d):
+        text = self._parse(d)
+        with self._open() as file:
+            file.write(text)
+            file.flush()
+        self.last_save = datetime.datetime.now()
+
+    @contextmanager
+    def _open(self):
+        """
+        Create a context manager that encapsulates the selection of the fallback
+        file name and can be used like Python's built-in open() function with
+        the with keyword:
+
+             with self._open(...) as file:
+                 ...
+        """
+        try:
+            with open(self.file_path, 'w', encoding='utf-8') as file:
+                yield file
+        except (IOError, OSError):
+            original_path = Path(self.file_path)
+            fallback_path = original_path.with_stem(f'{original_path.stem}_1')
+
+            if os.path.exists(fallback_path):
+                raise Exception(t('rescue_saving_failed'))
+            else:
+                self.logn_callback()
+                self.logn_callback(
+                    f'Rescue saving to {fallback_path}',
+                    'error',
+                    f'file://{fallback_path}'
+                )
+                with open(fallback_path, 'w', encoding='utf-8') as file:
+                    yield file
+
+    def _parse(self, d):
+       if self.fmt == 'html':
+           return d.asHTML()
+       elif self.fmt == 'txt':
+           return html_to_text(d)
+       elif self.fmt == 'vtt':
+           return html_to_webvtt(d, self.audio_file_path)
+
+
 class TimeEntry(ctk.CTkEntry): # special Entry box to enter time in the format hh:mm:ss
                                # based on https://stackoverflow.com/questions/63622880/how-to-make-python-automatically-put-colon-in-the-format-of-time-hhmmss
     def __init__(self, master, **kwargs):
@@ -901,6 +962,12 @@ class App(ctk.CTk):
                 # prepare transcript html
                 d = AdvancedHTMLParser.AdvancedHTMLParser()
                 d.parseStr(default_html)                
+                saver = TranscriptSaver(
+                    self.cfg.my_transcript_file,
+                    self.cfg.transcript.file_ext,
+                    self.cfg.audio_file,
+                    self.logn
+                )
 
                 # add audio file path:
                 tag = d.createElement("meta")
@@ -950,40 +1017,6 @@ class App(ctk.CTk):
 
                 speaker = ''
                 prev_speaker = ''
-                self.last_auto_save = datetime.datetime.now()
-
-                def save_doc():
-                    txt = ''
-                    if self.cfg.transcript.file_ext == 'html':
-                        txt = d.asHTML()
-                    elif self.cfg.transcript.file_ext == 'txt':
-                        txt = html_to_text(d)
-                    elif self.cfg.transcript.file_ext == 'vtt':
-                        txt = html_to_webvtt(d, self.cfg.audio_file)
-                    else:
-                        raise TypeError(f'Invalid file type "{self.cfg.transcript.file_ext}".')
-                    try:
-                        if txt != '':
-                            with open(self.cfg.my_transcript_file, 'w', encoding="utf-8") as f:
-                                f.write(txt)
-                                f.flush()
-                            self.last_auto_save = datetime.datetime.now()
-                    except Exception as e:
-                        # other error while saving, maybe the file is already open in Word and cannot be overwritten
-                        # try saving to a different filename
-                        transcript_path = Path(self.cfg.my_transcript_file)
-                        self.cfg.my_transcript_file = f'{transcript_path.parent}/{transcript_path.stem}_1{self.cfg.transcript.file_ext}'
-                        if os.path.exists(self.cfg.my_transcript_file):
-                            # the alternative filename also exists already, don't want to overwrite, giving up
-                            raise Exception(t('rescue_saving_failed'))
-                        else:
-                            # htmlStr = d.asHTML()
-                            with open(self.cfg.my_transcript_file, 'w', encoding="utf-8") as f:
-                                f.write(txt)
-                                f.flush()
-                            self.logn()
-                            self.logn(t('rescue_saving', file=self.cfg.my_transcript_file), 'error', link=f'file://{self.cfg.my_transcript_file}')
-                            self.last_auto_save = datetime.datetime.now()
 
                 try:
                     from faster_whisper import WhisperModel
@@ -1029,7 +1062,7 @@ class App(ctk.CTk):
                         # check for user cancelation
                         if self.cancel:
                             if self.auto_save:
-                                save_doc()
+                                saver.save(d)
                                 self.logn()
                                 self.log(t('transcription_saved'))
                                 self.logn(self.cfg.my_transcript_file, link=f'file://{self.cfg.my_transcript_file}')
@@ -1155,13 +1188,13 @@ class App(ctk.CTk):
 
                         # auto save
                         if self.auto_save:
-                            if (datetime.datetime.now() - self.last_auto_save).total_seconds() > 20:
-                                save_doc()
+                            if (datetime.datetime.now() - saver.last_save).total_seconds() > 20:
+                                saver.save(d)
 
                         progr = round((segment.end/info.duration) * 100)
                         self.set_progress(3, progr)
 
-                    save_doc()
+                    saver.save(d)
                     self.logn()
                     self.logn()
                     self.logn(t('transcription_finished'), 'highlight')
