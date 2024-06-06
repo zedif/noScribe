@@ -988,7 +988,7 @@ class App(ctk.CTk):
                 try:
                     from faster_whisper import WhisperModel
                     model = WhisperModel(self.cfg.whisper.model,
-                                         device=whisper_device,  
+                                         device=cfg.whisper.device,  
                                          cpu_threads=platform_cfg.number_threads,
                                          compute_type=self.cfg.whisper.compute_type, 
                                          local_files_only=True)
