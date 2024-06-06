@@ -176,12 +176,15 @@ if platform.system() == "Darwin": # = MAC
     # Default to mps on 12.3 and newer, else cpu
     xpu = get_config('pyannote_xpu', 'mps' if platform.mac_ver()[0] >= '12.3' else 'cpu')
     cfg.pyannote.xpu = 'mps' if xpu == 'mps' else 'cpu'
+    cfg.whisper.device = 'auto'
 elif platform.system() in ('Windows', 'Linux'):
     # Use cuda if available and not set otherwise in config.yml, fallback to cpu: 
     xpu = get_config('pyannote_xpu', 'cuda' if get_cuda_device_count() > 0 else 'cpu')
     cfg.pyannote.xpu = 'cuda' if xpu == 'cuda' else 'cpu'
     whisper_xpu = get_config('whisper_xpu', 'cuda' if get_cuda_device_count() > 0 else 'cpu')
     cfg.whisper_xpu = 'cuda' if whisper_xpu == 'cuda' else 'cpu'
+    cfg.whisper.device = 'cpu'
+    cfg.whisper.device = cfg.whisper_xpu
 else:
     raise Exception('Platform not supported yet.')
 
@@ -984,13 +987,6 @@ class App(ctk.CTk):
 
                 try:
                     from faster_whisper import WhisperModel
-                    if platform.system() == "Darwin": # = MAC
-                        whisper_device = 'auto'
-                    elif platform.system() in ('Windows', 'Linux'):
-                        whisper_device = 'cpu'
-                        whisper_device = self.cfg.whisper_xpu
-                    else:
-                        raise Exception('Platform not supported yet.')
                     model = WhisperModel(self.cfg.whisper.model,
                                          device=whisper_device,  
                                          cpu_threads=platform_cfg.number_threads,
