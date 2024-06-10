@@ -139,7 +139,13 @@ def get_config(key: str, default):
         app_config[key] = default
     return app_config[key]
 
-    
+def save_config(config, filename):
+    try:
+        with open(filename, 'w') as file:
+            yaml.safe_dump(config, file)
+    except Exception as e:
+        print(f'Failed to write configuration file: {e}')
+
 def version_higher(version1, version2) -> int:
     """Will return 
     1 if version1 is higher
@@ -202,11 +208,8 @@ cfg.pyannote.abspath = diarize_abspath
 
 app_config['app_version'] = app_version
 
-def save_config():
-    with open(config_file, 'w') as file:
-        yaml.safe_dump(app_config, file)
 
-save_config()
+save_config(config_file, app_config)
 
 # locale: setting the language of the UI
 # see https://pypi.org/project/python-i18n/
@@ -1392,17 +1395,10 @@ class App(ctk.CTk):
         self.cfg_is_ready = True
 
 
-    def store_settings(self):
-        try:
-            with open('./cfg.yaml', 'w') as file:
-                yaml.safe_dump(self.cfg, file)
-        except Exception as e:
-            print(f'Failed to write configuration file: {e}')
-
 
     def button_start_event(self):
         self.collect_settings()
-        self.store_settings()
+        save_config(self.cfg, 'cfg.yaml')
 
         if self.cfg_is_ready:
             self.proc_start_time = datetime.datetime.now()
@@ -1447,7 +1443,7 @@ class App(ctk.CTk):
             app_config['last_overlapping'] = self.check_box_overlapping.get()
             app_config['last_timestamps'] = self.check_box_timestamps.get()
 
-            save_config()
+            save_config(config_file, app_config)
         finally:
             self.destroy()
 
