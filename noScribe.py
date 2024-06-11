@@ -97,19 +97,21 @@ if not os.path.exists(config_dir):
 
 config_file = os.path.join(config_dir, 'config.yml')
 
-platform_cfg = DefaultMunch(None)
+platform_cfg = Munch()
 platform_cfg.system = platform.system()
 
-cfg = DefaultMunch(None)
-cfg.transcript = DefaultMunch(None)
-cfg.whisper = DefaultMunch(None)
-cfg.ffmpeg = DefaultMunch(None)
-cfg.pyannote = DefaultMunch(None)
-cfg.transcript.file = ''
-cfg.audio_file= ''
+cfg = Munch()
+cfg.whisper = Munch()
+cfg.whisper.transcript = Munch()
+cfg.whisper.transcript.file = ''
+cfg.ffmpeg = Munch()
+cfg.pyannote = Munch()
+cfg.audio_file = ''
 tmpdir = TemporaryDirectory('noScribe')
 cfg.tmpdir = tmpdir.name
 cfg.tmp_audio_file = os.path.join(cfg.tmpdir, 'tmp_audio.wav')
+cfg.whisper.audio = Munch()
+cfg.whisper.audio.tmp_file = os.path.join(cfg.tmpdir, 'tmp_audio.wav')
 
 cfg.startupinfo = None
 if platform_cfg.system == 'Windows':
@@ -144,7 +146,7 @@ def save_config(config, filename):
         with open(filename, 'w') as file:
             yaml.safe_dump(config, file)
     except Exception as e:
-        print(f'Failed to write configuration file: {e}')
+        print(f"Failed to write configuration file '{filename}': {e}")
 
 def version_higher(version1, version2) -> int:
     """Will return 
@@ -209,7 +211,7 @@ cfg.pyannote.abspath = diarize_abspath
 app_config['app_version'] = app_version
 
 
-save_config(config_file, app_config)
+save_config(app_config, config_file)
 
 # locale: setting the language of the UI
 # see https://pypi.org/project/python-i18n/
@@ -252,7 +254,7 @@ def get_number_threads():
         return int(cpu_count * 0.75)
     else:
         raise Exception('Platform not supported yet.')
-platform_cfg.number_threads = get_number_threads()
+cfg.whisper.number_threads = get_number_threads()
 
 # timestamp regex
 timestamp_re = re.compile('\[\d\d:\d\d:\d\d.\d\d\d --> \d\d:\d\d:\d\d.\d\d\d\]')
@@ -477,6 +479,268 @@ class TranscriptSaver(object):
        elif self.fmt == 'vtt':
            return html_to_webvtt(d, self.audio_file_path)
 
+
+def transcribe(cfg, log_callback, logn_callback, set_progress_callback, user_cancel_callback):
+    logn_callback(t('loading_whisper'))
+
+    # prepare transcript html
+    d = AdvancedHTMLParser.AdvancedHTMLParser()
+    d.parseStr(default_html)                
+    saver = TranscriptSaver(
+        cfg.my_transcript_file,
+        cfg.transcript.file_ext,
+        cfg.audio.file,
+        logn_callback
+    )
+    print ("AVER")
+
+    # add audio file path:
+    tag = d.createElement("meta")
+    tag.name = "audio_source"
+    tag.content = cfg.audio.file
+    d.head.appendChild(tag)
+
+    # add app version:
+    """ # removed because not really necessary
+    tag = d.createElement("meta")
+    tag.name = "noScribe_version"
+    tag.content = app_version
+    d.head.appendChild(tag)
+    """
+
+    #add WordSection1 (for line numbers in MS Word) as main_body
+    main_body = d.createElement('div')
+    main_body.addClass('WordSection1')
+    d.body.appendChild(main_body)
+
+    # header               
+    p = d.createElement('p')
+    p.setStyle('font-weight', '600')
+    p.appendText(Path(cfg.audio.file).stem) # use the name of the audio file (without extension) as the title
+    main_body.appendChild(p)
+
+    # subheader
+    p = d.createElement('p')
+    s = d.createElement('span')
+    s.setStyle('color', '#909090')
+    s.setStyle('font-size', '0.8em')
+    s.appendText(t('doc_header', version=app_version))
+    br = d.createElement('br')
+    s.appendChild(br)
+
+    s.appendText(t('doc_header_audio', file=cfg.audio.file))
+    br = d.createElement('br')
+    s.appendChild(br)
+
+    s.appendText(f'({cfg.option_info})')
+
+    p.appendChild(s)
+    main_body.appendChild(p)
+
+    p = d.createElement('p')
+    main_body.appendChild(p)
+
+    speaker = ''
+    prev_speaker = ''
+    print ("SEWTUP")
+
+    try:
+        from faster_whisper import WhisperModel
+        model = WhisperModel(cfg.model,
+                             device=cfg.device,
+                             cpu_threads=cfg.number_threads,
+                             compute_type=cfg.compute_type,
+                             local_files_only=True)
+        logn_callback('model loaded', where='file')
+        print("WHIPSER LOADED")
+
+        if user_cancel_callback():
+            raise Exception(t('err_user_cancelation')) 
+        print("USER CANCEL CHECKED")
+
+        whisper_lang = cfg.language if cfg.language != 'auto' else None
+   
+        try:
+            vad_threshold = float(app_config['voice_activity_detection_threshold'])
+        except:
+            app_config['voice_activity_detection_threshold'] = '0.5'
+            vad_threshold = 0.5
+        
+        print("CALLING TRANSCRIBE")
+        print(cfg.audio.tmp_file)
+        segments, info = model.transcribe(
+            cfg.audio.tmp_file, language=whisper_lang, 
+            beam_size=1, temperature=0, word_timestamps=True, 
+            initial_prompt=cfg.prompt, vad_filter=True,
+            vad_parameters=dict(min_silence_duration_ms=200, 
+                                threshold=vad_threshold))
+
+        print("CALLIed TRANSCRIBE")
+        if cfg.language == "auto":
+            logn_callback("Detected language '%s' with probability %f" % (info.language, info.language_probability))
+
+        if user_cancel_callback():
+            raise Exception(t('err_user_cancelation')) 
+
+        logn_callback(t('start_transcription'))
+        logn_callback()
+
+        last_segment_end = 0
+        last_timestamp_ms = 0
+        first_segment = True
+
+        for segment in segments:
+            # check for user cancelation
+            if user_cancel_callback():
+                if cfg.transcript.auto_save:
+                    saver.save(d)
+                    logn_callback()
+                    log_callback(t('transcription_saved'))
+                    logn_callback(cfg.my_transcript_file, link=f'file://{cfg.my_transcript_file}')
+  
+                raise Exception(t('err_user_cancelation')) 
+
+            # get time of the segment in milliseconds
+            start = round(segment.start * 1000.0)
+            end = round(segment.end * 1000.0)
+            # if we skipped a part at the beginning of the audio we have to add this here again, otherwise the timestaps will not match the original audio:
+            orig_audio_start = cfg.audio.start + start
+            orig_audio_end = cfg.audio.start + end
+
+            if cfg.timestamps:
+                ts = ms_to_str(orig_audio_start)
+                ts = f'[{ts}]'
+
+            # check for pauses and mark them in the transcript
+            if (cfg.pause > 0) and (start - last_segment_end >= cfg.pause * 1000): # (more than x seconds with no speech)
+                pause_len = round((start - last_segment_end)/1000)
+                if pause_len >= 60: # longer than 60 seconds
+                    pause_str = ' ' + t('pause_minutes', minutes=round(pause_len/60))
+                elif pause_len >= 10: # longer than 10 seconds
+                    pause_str = ' ' + t('pause_seconds', seconds=pause_len)
+                else: # less than 10 seconds
+                    pause_str = ' (' + (cfg.pause_marker * pause_len) + ')'
+
+                if first_segment:
+                    pause_str = pause_str.lstrip() + ' '
+
+                orig_audio_start_pause = cfg.audio.start + last_segment_end
+                orig_audio_end_pause = cfg.audio.start + start
+                a = d.createElement('a')
+                a.name = f'ts_{orig_audio_start_pause}_{orig_audio_end_pause}_{speaker}'
+                a.appendText(pause_str)
+                p.appendChild(a)
+                log_callback(pause_str)
+                if first_segment:
+                    logn_callback()
+                    logn_callback()
+            last_segment_end = end
+
+            # write text to the doc
+            # diarization (speaker detection)?
+            seg_text = segment.text
+            seg_html = seg_text
+
+            if cfg.speaker_detection != 'none':
+                new_speaker = find_speaker(diarization, start, end, self.overlapping_speech_selected)
+                if (speaker != new_speaker) and (new_speaker != ''): # speaker change
+                    if new_speaker[:2] == '//': # is overlapping speech, create no new paragraph
+                        prev_speaker = speaker
+                        speaker = new_speaker
+                        seg_text = f' {speaker}:{seg_text}'
+                        seg_html = seg_text                                
+                    elif (speaker[:2] == '//') and (new_speaker == prev_speaker): # was overlapping speech and we are returning to the previous speaker 
+                        speaker = new_speaker
+                        seg_text = f'//{seg_text}'
+                        seg_html = seg_text
+                    else: # new speaker, not overlapping
+                        if speaker[:2] == '//': # was overlapping speech, mark the end
+                            last_elem = p.lastElementChild
+                            if last_elem:
+                                last_elem.appendText('//')
+                            else:
+                                p.appendText('//')
+                            log_callback('//')
+                        p = d.createElement('p')
+                        main_body.appendChild(p)
+                        if not first_segment:
+                            logn_callback()
+                            logn_callback()
+                        speaker = new_speaker
+                        # add timestamp
+                        if cfg.timestamps:
+                            seg_html = f'{speaker} <span style="color: {cfg.timestamp_color}" >{ts}</span>:{seg_text}'
+                            seg_text = f'{speaker} {ts}:{seg_text}'
+                            last_timestamp_ms = start
+                        else:
+                            if cfg.transcript.file_ext != 'vtt': # in vtt files, speaker names are added as special voice tags so skip this here
+                                seg_text = f'{speaker}:{seg_text}'
+                                seg_html = seg_text
+                            else:
+                                seg_html = seg_text.lstrip()
+                                seg_text = f'{speaker}:{seg_text}'
+                            
+                else: # same speaker
+                    if cfg.timestamps:
+                        if (start - last_timestamp_ms) > cfg.timestamp_interval:
+                            seg_html = f' <span style="color: {cfg.timestamp_color}" >{ts}</span>{seg_text}'
+                            seg_text = f' {ts}{seg_text}'
+                            last_timestamp_ms = start
+                        else:
+                            seg_html = seg_text
+
+            else: # no speaker detection
+                if cfg.timestamps and (first_segment or (start - last_timestamp_ms) > cfg.timestamp_interval):
+                    seg_html = f' <span style="color: {cfg.timestamp_color}" >{ts}</span>{seg_text}'
+                    seg_text = f' {ts}{seg_text}'
+                    last_timestamp_ms = start
+                else:
+                    seg_html = seg_text
+                # avoid leading whitespace in first paragraph
+                if first_segment:
+                    seg_text = seg_text.lstrip()
+                    seg_html = seg_html.lstrip()
+
+            # Mark confidence level (not implemented yet in html)
+            # cl_level = round((segment.avg_logprob + 1) * 10)
+            # TODO: better cl_level for words based on https://github.com/Softcatala/whisper-ctranslate2/blob/main/src/whisper_ctranslate2/transcribe.py
+            # if cl_level > 0:
+            #     r.style = d.styles[f'noScribe_cl{cl_level}']
+
+            # Create bookmark with audio timestamps start to end and add the current segment.
+            # This way, we can jump to the according audio position and play it later in the editor.
+            a_html = f'<a name="ts_{orig_audio_start}_{orig_audio_end}_{speaker}" >{seg_html}</a>'
+            a = d.createElementFromHTML(a_html)
+            p.appendChild(a)
+
+            log_callback(seg_text)
+
+            first_segment = False
+
+            # auto save
+            if cfg.transcript.auto_save:
+                if (datetime.datetime.now() - saver.last_save).total_seconds() > 20:
+                    saver.save(d)
+
+            progr = round((segment.end/info.duration) * 100)
+            set_progress_callback(3, progr)
+
+        saver.save(d)
+        logn_callback()
+        logn_callback()
+        logn_callback(t('transcription_finished'), 'highlight')
+        if cfg.transcript.file != cfg.my_transcript_file: # used alternative filename because saving under the initial name failed
+            log_callback(t('rescue_saving'))
+            logn_callback(cfg.my_transcript_file, link=f'file://{cfg.my_transcript_file}')
+        else:
+            log_callback(t('transcription_saved'))
+            logn_callback(cfg.my_transcript_file, link=f'file://{cfg.my_transcript_file}')
+    
+    except Exception as e:
+        logn_callback()
+        logn_callback(t('err_transcription'), 'error')
+        logn_callback(e, 'error')
+        return
 
 class TimeEntry(ctk.CTkEntry): # special Entry box to enter time in the format hh:mm:ss
                                # based on https://stackoverflow.com/questions/63622880/how-to-make-python-automatically-put-colon-in-the-format-of-time-hhmmss
@@ -801,9 +1065,9 @@ class App(ctk.CTk):
             self.button_audio_file_name.configure(text=os.path.basename(self.cfg.audio_file))
 
     def button_transcript_file_event(self):
-        if self.cfg.transcript.file != '':
-            _initialdir = os.path.dirname(self.cfg.transcript.file)
-            _initialfile = os.path.basename(self.cfg.transcript.file)
+        if self.cfg.whisper.transcript.file != '':
+            _initialdir = os.path.dirname(self.cfg.whisper.transcript.file)
+            _initialfile = os.path.basename(self.cfg.whisper.transcript.file)
         else:
             _initialdir = os.path.dirname(self.cfg.audio_file)
             _initialfile = Path(os.path.basename(self.cfg.audio_file)).stem
@@ -822,10 +1086,10 @@ class App(ctk.CTk):
                                              filetypes=filetypes, 
                                              defaultextension=app_config['last_filetype'])
         if fn:
-            self.cfg.transcript.file = fn
-            self.logn(t('log_transcript_filename') + self.cfg.transcript.file)
-            self.button_transcript_file_name.configure(text=os.path.basename(self.cfg.transcript.file))
-            app_config['last_filetype'] = os.path.splitext(self.cfg.transcript.file)[1][1:]
+            self.cfg.whisper.transcript.file = fn
+            self.logn(t('log_transcript_filename') + self.cfg.whisper.transcript.file)
+            self.button_transcript_file_name.configure(text=os.path.basename(self.cfg.whisper.transcript.file))
+            app_config['last_filetype'] = os.path.splitext(self.cfg.whisper.transcript.file)[1][1:]
             
     def set_progress(self, step, value):
         """ Update state of the progress bar """
@@ -860,7 +1124,7 @@ class App(ctk.CTk):
             # create log file
             if not os.path.exists(f'{config_dir}/log'):
                 os.makedirs(f'{config_dir}/log')
-            self.log_file = open(f'{config_dir}/log/{Path(self.cfg.my_transcript_file).stem}.log', 'w', encoding="utf-8")
+            self.log_file = open(f'{config_dir}/log/{Path(self.cfg.whisper.my_transcript_file).stem}.log', 'w', encoding="utf-8")
 
             try:
 
@@ -958,268 +1222,25 @@ class App(ctk.CTk):
                 #-------------------------------------------------------
                 # 3) Transcribe with faster-whisper
 
+
                 self.logn()
                 self.logn(t('start_transcription'), 'highlight')
-                self.logn(t('loading_whisper'))
-
-                # prepare transcript html
-                d = AdvancedHTMLParser.AdvancedHTMLParser()
-                d.parseStr(default_html)                
-                saver = TranscriptSaver(
-                    self.cfg.my_transcript_file,
-                    self.cfg.transcript.file_ext,
-                    self.cfg.audio_file,
-                    self.logn
+                save_config(cfg.whisper, 'faster-whisper.yaml')
+                transcribe(
+                    cfg.whisper,
+                    log_callback=self.log,
+                    logn_callback=self.logn,
+                    set_progress_callback=self.set_progress,
+                    user_cancel_callback=self.user_cancelled
                 )
 
-                # add audio file path:
-                tag = d.createElement("meta")
-                tag.name = "audio_source"
-                tag.content = self.cfg.audio_file
-                d.head.appendChild(tag)
-
-                # add app version:
-                """ # removed because not really necessary
-                tag = d.createElement("meta")
-                tag.name = "noScribe_version"
-                tag.content = app_version
-                d.head.appendChild(tag)
-                """
-
-                #add WordSection1 (for line numbers in MS Word) as main_body
-                main_body = d.createElement('div')
-                main_body.addClass('WordSection1')
-                d.body.appendChild(main_body)
-
-                # header               
-                p = d.createElement('p')
-                p.setStyle('font-weight', '600')
-                p.appendText(Path(self.cfg.audio_file).stem) # use the name of the audio file (without extension) as the title
-                main_body.appendChild(p)
-
-                # subheader
-                p = d.createElement('p')
-                s = d.createElement('span')
-                s.setStyle('color', '#909090')
-                s.setStyle('font-size', '0.8em')
-                s.appendText(t('doc_header', version=app_version))
-                br = d.createElement('br')
-                s.appendChild(br)
-
-                s.appendText(t('doc_header_audio', file=self.cfg.audio_file))
-                br = d.createElement('br')
-                s.appendChild(br)
-
-                s.appendText(f'({self.cfg.option_info})')
-
-                p.appendChild(s)
-                main_body.appendChild(p)
-
-                p = d.createElement('p')
-                main_body.appendChild(p)
-
-                speaker = ''
-                prev_speaker = ''
-
-                try:
-                    from faster_whisper import WhisperModel
-                    model = WhisperModel(self.cfg.whisper.model,
-                                         device=cfg.whisper.device,  
-                                         cpu_threads=platform_cfg.number_threads,
-                                         compute_type=self.cfg.whisper.compute_type, 
-                                         local_files_only=True)
-                    self.logn('model loaded', where='file')
-
-                    if self.cancel:
-                        raise Exception(t('err_user_cancelation')) 
-
-                    whisper_lang = self.cfg.language if self.cfg.language != 'auto' else None
-   
-                    try:
-                        self.vad_threshold = float(app_config['voice_activity_detection_threshold'])
-                    except:
-                        app_config['voice_activity_detection_threshold'] = '0.5'
-                        self.vad_threshold = 0.5
-                    
-                    segments, info = model.transcribe(
-                        self.cfg.tmp_audio_file, language=whisper_lang, 
-                        beam_size=1, temperature=0, word_timestamps=True, 
-                        initial_prompt=self.cfg.whisper.prompt, vad_filter=True,
-                        vad_parameters=dict(min_silence_duration_ms=200, 
-                                            threshold=self.vad_threshold))
-
-                    if self.cfg.language == "auto":
-                        self.logn("Detected language '%s' with probability %f" % (info.language, info.language_probability))
-
-                    if self.cancel:
-                        raise Exception(t('err_user_cancelation')) 
-
-                    self.logn(t('start_transcription'))
-                    self.logn()
-
-                    last_segment_end = 0
-                    last_timestamp_ms = 0
-                    first_segment = True
-
-                    for segment in segments:
-                        # check for user cancelation
-                        if self.cancel:
-                            if self.auto_save:
-                                saver.save(d)
-                                self.logn()
-                                self.log(t('transcription_saved'))
-                                self.logn(self.cfg.my_transcript_file, link=f'file://{self.cfg.my_transcript_file}')
-  
-                            raise Exception(t('err_user_cancelation')) 
-
-                        # get time of the segment in milliseconds
-                        start = round(segment.start * 1000.0)
-                        end = round(segment.end * 1000.0)
-                        # if we skipped a part at the beginning of the audio we have to add this here again, otherwise the timestaps will not match the original audio:
-                        orig_audio_start = self.cfg.start + start
-                        orig_audio_end = self.cfg.start + end
-
-                        if self.timestamps:
-                            ts = ms_to_str(orig_audio_start)
-                            ts = f'[{ts}]'
-
-                        # check for pauses and mark them in the transcript
-                        if (self.pause > 0) and (start - last_segment_end >= self.pause * 1000): # (more than x seconds with no speech)
-                            pause_len = round((start - last_segment_end)/1000)
-                            if pause_len >= 60: # longer than 60 seconds
-                                pause_str = ' ' + t('pause_minutes', minutes=round(pause_len/60))
-                            elif pause_len >= 10: # longer than 10 seconds
-                                pause_str = ' ' + t('pause_seconds', seconds=pause_len)
-                            else: # less than 10 seconds
-                                pause_str = ' (' + (self.pause_marker * pause_len) + ')'
-
-                            if first_segment:
-                                pause_str = pause_str.lstrip() + ' '
-
-                            orig_audio_start_pause = self.cfg.start + last_segment_end
-                            orig_audio_end_pause = self.cfg.start + start
-                            a = d.createElement('a')
-                            a.name = f'ts_{orig_audio_start_pause}_{orig_audio_end_pause}_{speaker}'
-                            a.appendText(pause_str)
-                            p.appendChild(a)
-                            self.log(pause_str)
-                            if first_segment:
-                                self.logn()
-                                self.logn()
-                        last_segment_end = end
-
-                        # write text to the doc
-                        # diarization (speaker detection)?
-                        seg_text = segment.text
-                        seg_html = seg_text
-
-                        if self.speaker_detection != 'none':
-                            new_speaker = find_speaker(diarization, start, end, self.overlapping_speech_selected)
-                            if (speaker != new_speaker) and (new_speaker != ''): # speaker change
-                                if new_speaker[:2] == '//': # is overlapping speech, create no new paragraph
-                                    prev_speaker = speaker
-                                    speaker = new_speaker
-                                    seg_text = f' {speaker}:{seg_text}'
-                                    seg_html = seg_text                                
-                                elif (speaker[:2] == '//') and (new_speaker == prev_speaker): # was overlapping speech and we are returning to the previous speaker 
-                                    speaker = new_speaker
-                                    seg_text = f'//{seg_text}'
-                                    seg_html = seg_text
-                                else: # new speaker, not overlapping
-                                    if speaker[:2] == '//': # was overlapping speech, mark the end
-                                        last_elem = p.lastElementChild
-                                        if last_elem:
-                                            last_elem.appendText('//')
-                                        else:
-                                            p.appendText('//')
-                                        self.log('//')
-                                    p = d.createElement('p')
-                                    main_body.appendChild(p)
-                                    if not first_segment:
-                                        self.logn()
-                                        self.logn()
-                                    speaker = new_speaker
-                                    # add timestamp
-                                    if self.timestamps:
-                                        seg_html = f'{speaker} <span style="color: {self.timestamp_color}" >{ts}</span>:{seg_text}'
-                                        seg_text = f'{speaker} {ts}:{seg_text}'
-                                        last_timestamp_ms = start
-                                    else:
-                                        if self.cfg.transcript.file_ext != 'vtt': # in vtt files, speaker names are added as special voice tags so skip this here
-                                            seg_text = f'{speaker}:{seg_text}'
-                                            seg_html = seg_text
-                                        else:
-                                            seg_html = seg_text.lstrip()
-                                            seg_text = f'{speaker}:{seg_text}'
-                                        
-                            else: # same speaker
-                                if self.timestamps:
-                                    if (start - last_timestamp_ms) > self.timestamp_interval:
-                                        seg_html = f' <span style="color: {self.timestamp_color}" >{ts}</span>{seg_text}'
-                                        seg_text = f' {ts}{seg_text}'
-                                        last_timestamp_ms = start
-                                    else:
-                                        seg_html = seg_text
-
-                        else: # no speaker detection
-                            if self.timestamps and (first_segment or (start - last_timestamp_ms) > self.timestamp_interval):
-                                seg_html = f' <span style="color: {self.timestamp_color}" >{ts}</span>{seg_text}'
-                                seg_text = f' {ts}{seg_text}'
-                                last_timestamp_ms = start
-                            else:
-                                seg_html = seg_text
-                            # avoid leading whitespace in first paragraph
-                            if first_segment:
-                                seg_text = seg_text.lstrip()
-                                seg_html = seg_html.lstrip()
-
-                        # Mark confidence level (not implemented yet in html)
-                        # cl_level = round((segment.avg_logprob + 1) * 10)
-                        # TODO: better cl_level for words based on https://github.com/Softcatala/whisper-ctranslate2/blob/main/src/whisper_ctranslate2/transcribe.py
-                        # if cl_level > 0:
-                        #     r.style = d.styles[f'noScribe_cl{cl_level}']
-
-                        # Create bookmark with audio timestamps start to end and add the current segment.
-                        # This way, we can jump to the according audio position and play it later in the editor.
-                        a_html = f'<a name="ts_{orig_audio_start}_{orig_audio_end}_{speaker}" >{seg_html}</a>'
-                        a = d.createElementFromHTML(a_html)
-                        p.appendChild(a)
-
-                        self.log(seg_text)
-
-                        first_segment = False
-
-                        # auto save
-                        if self.auto_save:
-                            if (datetime.datetime.now() - saver.last_save).total_seconds() > 20:
-                                saver.save(d)
-
-                        progr = round((segment.end/info.duration) * 100)
-                        self.set_progress(3, progr)
-
-                    saver.save(d)
-                    self.logn()
-                    self.logn()
-                    self.logn(t('transcription_finished'), 'highlight')
-                    if self.cfg.transcript.file != self.cfg.my_transcript_file: # used alternative filename because saving under the initial name failed
-                        self.log(t('rescue_saving'))
-                        self.logn(self.cfg.my_transcript_file, link=f'file://{self.cfg.my_transcript_file}')
-                    else:
-                        self.log(t('transcription_saved'))
-                        self.logn(self.cfg.my_transcript_file, link=f'file://{self.cfg.my_transcript_file}')
-                    # log duration of the whole process in minutes
-                    self.proc_time = datetime.datetime.now() - self.proc_start_time
-                    self.logn(t('trancription_time', duration=int(self.proc_time.total_seconds() / 60))) 
-                    
-                    # auto open transcript in editor
-                    if (self.auto_edit_transcript == 'True') and (self.cfg.transcript.file_ext == 'html'):
-                        self.launch_editor(self.cfg.my_transcript_file)
+                # log duration of the whole process in minutes
+                self.proc_time = datetime.datetime.now() - self.proc_start_time
+                self.logn(t('trancription_time', duration=int(self.proc_time.total_seconds() / 60))) 
                 
-                except Exception as e:
-                    self.logn()
-                    self.logn(t('err_transcription'), 'error')
-                    self.logn(e, 'error')
-                    return
+                # auto open transcript in editor
+                if (self.auto_edit_transcript == 'True') and (cfg.whisper.transcript.file_ext == 'html'):
+                    self.launch_editor(cfg.my_transcript_file)
 
             finally:
                 self.log_file.close()
@@ -1240,24 +1261,25 @@ class App(ctk.CTk):
 
     def collect_settings(self):
         # collect all the options
-        self.cfg.option_info = ''
+        self.cfg.whisper.option_info = ''
 
         if self.cfg.audio_file == '':
             self.logn(t('err_no_audio_file'), 'error')
             tk.messagebox.showerror(title='noScribe', message=t('err_no_audio_file'))
             return
+        self.cfg.whisper.audio.file = self.cfg.audio_file
 
-        if self.cfg.transcript.file == '':
+        if self.cfg.whisper.transcript.file == '':
             self.logn(t('err_no_transcript_file'), 'error')
             tk.messagebox.showerror(title='noScribe', message=t('err_no_transcript_file'))
             return
 
-        self.cfg.my_transcript_file = self.cfg.transcript.file
-        self.cfg.transcript.file_ext = os.path.splitext(self.cfg.transcript.file)[1][1:]
+        self.cfg.whisper.my_transcript_file = self.cfg.whisper.transcript.file
+        self.cfg.whisper.transcript.file_ext = os.path.splitext(self.cfg.whisper.transcript.file)[1][1:]
 
         # options for faster-whisper
         self.cfg.whisper.precise_beam_size = get_config('whisper_precise_beam_size', 1)
-        self.logn(f'whisper precise beam size: {self.cfg.precise_beam_size}', where='file')
+        self.logn(f'whisper precise beam size: {self.cfg.whisper.precise_beam_size}', where='file')
 
         self.cfg.whisper.fast_beam_size = get_config('whisper_fast_beam_size', 1)
         self.logn(f'whisper fast beam size: {self.cfg.whisper.fast_beam_size}', where='file')
@@ -1274,11 +1296,11 @@ class App(ctk.CTk):
         self.cfg.whisper.fast_compute_type = get_config('whisper_fast_compute_type', 'default')
         self.logn(f'whisper fast compute type: {self.cfg.whisper.fast_compute_type}', where='file')
 
-        self.timestamp_interval = get_config('timestamp_interval', 60_000) # default: add a timestamp every minute
-        self.logn(f'timestamp_interval: {self.timestamp_interval}', where='file')
+        self.cfg.whisper.timestamp_interval = get_config('timestamp_interval', 60_000) # default: add a timestamp every minute
+        self.logn(f'timestamp_interval: {self.cfg.whisper.timestamp_interval}', where='file')
 
-        self.timestamp_color = get_config('timestamp_color', '#78909C') # default: light gray/blue
-        self.logn(f'timestamp_color: {self.timestamp_color}', where='file')
+        self.cfg.whisper.timestamp_color = get_config('timestamp_color', '#78909C') # default: light gray/blue
+        self.logn(f'timestamp_color: {self.cfg.whisper.timestamp_color}', where='file')
 
         # get UI settings
         val = self.entry_start.get()
@@ -1286,14 +1308,15 @@ class App(ctk.CTk):
             self.cfg.start = 0
         else:
             self.cfg.start = millisec(val)
-            self.cfg.option_info += f'{t("label_start")} {val} | ' 
+            self.cfg.whisper.option_info += f'{t("label_start")} {val} | ' 
+        self.cfg.whisper.audio.start = self.cfg.start
 
         val = self.entry_stop.get()
         if val == '':
             self.cfg.stop = '0'
         else:
             self.cfg.stop = millisec(val)
-            self.cfg.option_info += f'{t("label_stop")} {val} | '
+            self.cfg.whisper.option_info += f'{t("label_stop")} {val} | '
 
         if self.option_menu_quality.get() == 'fast':
             self.cfg.whisper.model = os.path.join(app_dir, 'models', 'faster-whisper-small')
@@ -1305,7 +1328,7 @@ class App(ctk.CTk):
             self.cfg.whisper.beam_size = self.cfg.whisper.precise_beam_size
             self.cfg.whisper.temperature = self.cfg.whisper.precise_temperature
             self.cfg.whisper.compute_type = self.cfg.whisper.precise_compute_type
-        self.cfg.option_info += f'{t("label_quality")} {self.option_menu_quality.get()} | '
+        self.cfg.whisper.option_info += f'{t("label_quality")} {self.option_menu_quality.get()} | '
 
         try:
             with open(os.path.join(app_dir, 'prompt.yml'), 'r', encoding='utf-8') as file:
@@ -1316,39 +1339,45 @@ class App(ctk.CTk):
         self.cfg.language = self.option_menu_language.get()
         if self.cfg.language != 'auto':
             self.cfg.language = self.cfg.language[0:3].strip()
+        self.cfg.whisper.language = self.cfg.language
 
         self.cfg.whisper.prompt = prompts.get(self.cfg.language, '') # Fetch language prompt, default to empty string
 
-        self.cfg.option_info += f'{t("label_language")} {self.cfg.language} | '
+        self.cfg.whisper.option_info += f'{t("label_language")} {self.cfg.language} | '
 
         self.speaker_detection = self.option_menu_speaker.get()
         self.cfg.speaker_detection = self.speaker_detection
-        self.cfg.option_info += f'{t("label_speaker")} {self.speaker_detection} | '
+        self.cfg.whisper.speaker_detection = self.speaker_detection
+        self.cfg.whisper.option_info += f'{t("label_speaker")} {self.speaker_detection} | '
 
         self.overlapping_speech_selected = self.check_box_overlapping.get()
-        self.cfg.option_info += f'{t("label_overlapping")} {self.overlapping_speech_selected} | '
+        self.cfg.whisper.option_info += f'{t("label_overlapping")} {self.overlapping_speech_selected} | '
 
         self.timestamps = self.check_box_timestamps.get()
-        self.cfg.option_info += f'{t("label_timestamps")} {self.timestamps} | '
+        self.cfg.whisper.option_info += f'{t("label_timestamps")} {self.timestamps} | '
 
-        self.pause = self.option_menu_pause._values.index(self.option_menu_pause.get())
-        self.cfg.option_info += f'{t("label_pause")} {self.pause}'
+        self.cfg.whisper.pause = self.option_menu_pause._values.index(self.option_menu_pause.get())
+        self.cfg.whisper.option_info += f'{t("label_pause")} {cfg.whisper.pause}'
 
-        self.pause_marker = get_config('pause_seconds_marker', '.') # Default to . if marker not in config
+        self.cfg.whisper.pause_marker = get_config('pause_seconds_marker', '.') # Default to . if marker not in config
 
         # Default to True if auto save not in config or invalid value
         self.auto_save = False if get_config('auto_save', 'True') == 'False' else True 
+        self.cfg.whisper.transcript.auto_save = self.auto_save
         
         # Open the finished transript in the editor automatically?
         self.auto_edit_transcript = get_config('auto_edit_transcript', 'True')
         
         # Check for invalid vtt options
-        if self.cfg.transcript.file_ext == 'vtt' and (self.pause > 0 or self.overlapping_speech_selected or self.timestamps):
+        if self.cfg.whisper.transcript.file_ext == 'vtt' and (self.cfg.whisper.pause > 0 or self.overlapping_speech_selected or self.timestamps):
             self.logn()
             self.logn(t('err_vtt_invalid_options'), 'error')
-            self.pause = 0
             self.overlapping_speech_selected = False
-            self.timestamps = False           
+            self.timestamps = False
+
+            self.cfg.whisper.pause = 0
+            self.cfg.whisper.overlapping_speech_selected = self.overlapping_speech_selected
+            self.cfg.whisper.timestamps = self.timestamps
 
         # log CPU capabilities
         self.logn("=== CPU FEATURES ===", where="file")
@@ -1431,6 +1460,9 @@ class App(ctk.CTk):
             self.update()
             self.cancel = True
 
+    def user_cancelled(self):
+        return self.cancel
+
     def on_closing(self):
         # (see: https://stackoverflow.com/questions/111155/how-do-i-handle-the-window-close-event-in-tkinter)
         #if messagebox.askokcancel("Quit", "Do you want to quit?"):
@@ -1443,7 +1475,7 @@ class App(ctk.CTk):
             app_config['last_overlapping'] = self.check_box_overlapping.get()
             app_config['last_timestamps'] = self.check_box_timestamps.get()
 
-            save_config(config_file, app_config)
+            save_config(app_config, config_file)
         finally:
             self.destroy()
 
