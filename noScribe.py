@@ -481,6 +481,7 @@ class TranscriptSaver(object):
 
 
 def transcribe(cfg, log_callback, logn_callback, set_progress_callback, user_cancel_callback):
+
     logn_callback(t('loading_whisper'))
 
     # prepare transcript html
@@ -492,7 +493,6 @@ def transcribe(cfg, log_callback, logn_callback, set_progress_callback, user_can
         cfg.audio.file,
         logn_callback
     )
-    print ("AVER")
 
     # add audio file path:
     tag = d.createElement("meta")
@@ -542,7 +542,6 @@ def transcribe(cfg, log_callback, logn_callback, set_progress_callback, user_can
 
     speaker = ''
     prev_speaker = ''
-    print ("SEWTUP")
 
     try:
         from faster_whisper import WhisperModel
@@ -552,11 +551,9 @@ def transcribe(cfg, log_callback, logn_callback, set_progress_callback, user_can
                              compute_type=cfg.compute_type,
                              local_files_only=True)
         logn_callback('model loaded', where='file')
-        print("WHIPSER LOADED")
 
         if user_cancel_callback():
             raise Exception(t('err_user_cancelation')) 
-        print("USER CANCEL CHECKED")
 
         whisper_lang = cfg.language if cfg.language != 'auto' else None
    
@@ -566,8 +563,6 @@ def transcribe(cfg, log_callback, logn_callback, set_progress_callback, user_can
             app_config['voice_activity_detection_threshold'] = '0.5'
             vad_threshold = 0.5
         
-        print("CALLING TRANSCRIBE")
-        print(cfg.audio.tmp_file)
         segments, info = model.transcribe(
             cfg.audio.tmp_file, language=whisper_lang, 
             beam_size=1, temperature=0, word_timestamps=True, 
@@ -575,7 +570,6 @@ def transcribe(cfg, log_callback, logn_callback, set_progress_callback, user_can
             vad_parameters=dict(min_silence_duration_ms=200, 
                                 threshold=vad_threshold))
 
-        print("CALLIed TRANSCRIBE")
         if cfg.language == "auto":
             logn_callback("Detected language '%s' with probability %f" % (info.language, info.language_probability))
 
@@ -995,8 +989,8 @@ class App(ctk.CTk):
         # Source: https://stackoverflow.com/questions/13243807/popen-waiting-for-child-process-even-when-the-immediate-child-has-terminated/13256908#13256908 
         # set system/version dependent "start_new_session" analogs
         if file == '':
-            file = self.cfg.transcript.file
-        ext = os.path.splitext(self.cfg.transcript.file)[1][1:]
+            file = self.cfg.whisper.transcript.file
+        ext = os.path.splitext(self.cfg.whisper.transcript.file)[1][1:]
         if file != '' and ext != 'html':
             file = ''
             if not tk.messagebox.askyesno(title='noScribe', message=t('err_editor_invalid_format')):
@@ -1225,9 +1219,9 @@ class App(ctk.CTk):
 
                 self.logn()
                 self.logn(t('start_transcription'), 'highlight')
-                save_config(cfg.whisper, 'faster-whisper.yaml')
+                save_config(self.cfg.whisper, 'faster-whisper.yaml')
                 transcribe(
-                    cfg.whisper,
+                    self.cfg.whisper,
                     log_callback=self.log,
                     logn_callback=self.logn,
                     set_progress_callback=self.set_progress,
@@ -1239,8 +1233,8 @@ class App(ctk.CTk):
                 self.logn(t('trancription_time', duration=int(self.proc_time.total_seconds() / 60))) 
                 
                 # auto open transcript in editor
-                if (self.auto_edit_transcript == 'True') and (cfg.whisper.transcript.file_ext == 'html'):
-                    self.launch_editor(cfg.my_transcript_file)
+                if (self.auto_edit_transcript == 'True') and (self.cfg.whisper.transcript.file_ext == 'html'):
+                    self.launch_editor(self.cfg.whisper.my_transcript_file)
 
             finally:
                 self.log_file.close()
@@ -1376,8 +1370,8 @@ class App(ctk.CTk):
             self.timestamps = False
 
             self.cfg.whisper.pause = 0
-            self.cfg.whisper.overlapping_speech_selected = self.overlapping_speech_selected
-            self.cfg.whisper.timestamps = self.timestamps
+        self.cfg.whisper.overlapping_speech_selected = self.overlapping_speech_selected
+        self.cfg.whisper.timestamps = self.timestamps
 
         # log CPU capabilities
         self.logn("=== CPU FEATURES ===", where="file")
