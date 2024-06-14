@@ -649,7 +649,7 @@ class App(ctk.CTk):
             # create log file
             if not os.path.exists(f'{config_dir}/log'):
                 os.makedirs(f'{config_dir}/log')
-            self.log_file = open(f'{config_dir}/log/{Path(self.cfg.whisper.my_transcript_file).stem}.log', 'w', encoding="utf-8")
+            self.log_file = open(f'{config_dir}/log/{Path(self.cfg.whisper.transcript.file).stem}.log', 'w', encoding="utf-8")
 
             try:
 
@@ -750,7 +750,7 @@ class App(ctk.CTk):
                 self.logn()
                 self.logn(t('start_transcription'), 'highlight')
                 save_config(self.cfg.whisper, 'transcription.yaml')
-                transcribe(
+                my_transcript_file = transcribe(
                     self.cfg.whisper,
                     log_callback=self.log,
                     logn_callback=self.logn,
@@ -764,7 +764,7 @@ class App(ctk.CTk):
                 
                 # auto open transcript in editor
                 if (self.auto_edit_transcript == 'True') and (self.cfg.whisper.transcript.file_ext == 'html'):
-                    self.launch_editor(self.cfg.whisper.my_transcript_file)
+                    self.launch_editor(my_transcript_file)
 
             finally:
                 self.log_file.close()
@@ -798,7 +798,6 @@ class App(ctk.CTk):
             tk.messagebox.showerror(title='noScribe', message=t('err_no_transcript_file'))
             return
 
-        self.cfg.whisper.my_transcript_file = self.cfg.whisper.transcript.file
         self.cfg.whisper.transcript.file_ext = os.path.splitext(self.cfg.whisper.transcript.file)[1][1:]
 
         # options for faster-whisper

@@ -247,6 +247,7 @@ class TranscriptSaver(object):
                     f'file://{fallback_path}'
                 )
                 with open(fallback_path, 'w', encoding='utf-8') as file:
+                    self.file_path = str(fallback_path)
                     yield file
 
     def _parse(self, d):
@@ -266,7 +267,7 @@ def transcribe(cfg, log_callback, logn_callback, set_progress_callback, user_can
     d = AdvancedHTMLParser.AdvancedHTMLParser()
     d.parseStr(default_html)
     saver = TranscriptSaver(
-        cfg.my_transcript_file,
+        cfg.transcript.file,
         cfg.transcript.file_ext,
         cfg.audio.file,
         logn_callback
@@ -362,7 +363,7 @@ def transcribe(cfg, log_callback, logn_callback, set_progress_callback, user_can
                     saver.save(d)
                     logn_callback()
                     log_callback(t('transcription_saved'))
-                    logn_callback(cfg.my_transcript_file, link=f'file://{cfg.my_transcript_file}')
+                    logn_callback(saver.file_path, link=f'file://{cfg.file_name}')
 
                 raise Exception(t('err_user_cancelation'))
 
@@ -498,18 +499,20 @@ def transcribe(cfg, log_callback, logn_callback, set_progress_callback, user_can
         logn_callback()
         logn_callback()
         logn_callback(t('transcription_finished'), 'highlight')
-        if cfg.transcript.file != cfg.my_transcript_file: # used alternative filename because saving under the initial name failed
+        if cfg.transcript.file != saver.file_path: # used alternative filename because saving under the initial name failed
             log_callback(t('rescue_saving'))
-            logn_callback(cfg.my_transcript_file, link=f'file://{cfg.my_transcript_file}')
         else:
             log_callback(t('transcription_saved'))
-            logn_callback(cfg.my_transcript_file, link=f'file://{cfg.my_transcript_file}')
+        logn_callback(saver.file_path, link=f'file://{saver.file_path}')
+
+        return saver.file_path
 
     except Exception as e:
         logn_callback()
         logn_callback(t('err_transcription'), 'error')
         logn_callback(e, 'error')
-        return
+
+        return saver.file_path
 
 
 if __name__ == '__main__':
@@ -527,5 +530,5 @@ if __name__ == '__main__':
             print(f'Could not open config file: {e}')
 
         if config:
-            transcribe(config, log_callback=_logn, logn_callback=_logn, set_progress_callback=_pass, user_cancel_callback=_pass)
+            my_transcript_file = transcribe(config, log_callback=_logn, logn_callback=_logn, set_progress_callback=_pass, user_cancel_callback=_pass)
 
