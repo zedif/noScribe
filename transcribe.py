@@ -237,7 +237,7 @@ class TranscriptSaver(object):
             original_path = Path(self.file_path)
             fallback_path = original_path.with_stem(f'{original_path.stem}_1')
 
-            if os.path.exists(fallback_path):
+            if fallback_path.exists():
                 raise Exception(t('rescue_saving_failed'))
             else:
                 self.logn_callback()
