@@ -18,13 +18,17 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+import sys
+if len(sys.argv) not in [4, 5]:
+    print(f'Usage: python {sys.argv[0]} <device> <audio_file> <diarization_yaml_file> [<num_speakers>]')
+    sys.exit()
+
 import os
 import platform
 import yaml
 from pyannote.audio import Pipeline
 import torch
 from typing import Any, Mapping, Optional, Text
-import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
     
