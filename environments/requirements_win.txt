@@ -5,6 +5,7 @@ appdirs
 cpufeature
 customtkinter
 faster-whisper
+munch
 Pillow
 pyannote.audio @ git+https://github.com/kaixxx/pyannote-audio.git
 pyinstaller
