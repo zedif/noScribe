@@ -11,7 +11,7 @@ fast_compute_type: default
 fast_temperature: 0.0
 language: en
 model: ./models/faster-whisper-large-v2
-number_threads: 4
+number_threads: <threads>
 option_info: "Start (hh:mm:ss):  00:00:00 | Qualit\xE4t: precise | Sprache: en | Sprecher:in\
   \ erkennen: auto | \xDCberlappende Sprache: 1 | Zeitmarken: 1 | Pausen markieren:\
   \ 1"
@@ -21,7 +21,7 @@ pause_marker: .
 precise_beam_size: 1
 precise_compute_type: default
 precise_temperature: 0.0
-prompt: Hmm, let me think like, hmm, okay, here's what I'm, like, thinking.
+prompt: <prompt>
 speaker_detection: auto
 temperature: 0.0
 timestamp_color: '#78909C'
